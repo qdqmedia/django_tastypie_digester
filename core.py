@@ -25,8 +25,8 @@ class EndpointProxy(object):
     def _get_url(self):
         return '%s%s' % (self._api.base_url, self._endpoint_url)
 
-    def __call__(self, id=None, **kw):
-        return self._api(self._resource, id, **kw)
+    def get(self, id=None, **kw):
+        return self._api.get(self._resource, id, **kw)
 
     def many(self, *ids, **kw):
         return self._api.many(self._resource, *ids, **kw)
@@ -70,7 +70,7 @@ class ResourceProxy(object):
         Do nothing if already loaded.
         """
         if not self._resource:
-            self._resource = self._api(self._type, self._id)
+            self._resource = self._api.get(self._type, self._id)
         return self._resource
 
 
@@ -242,7 +242,7 @@ class ListProxy(ResourceListMixin):
         else:
             item = self._parse_item(item)
             if isinstance(item, ResourceProxy):
-                resource = self._api(proxy=item)
+                resource = self._api.get(proxy=item)
                 self._list[index] = resource
                 return resource
             else:
@@ -339,20 +339,20 @@ class Api(object):
         data = self._serializer.decode(raw_data)
         return data
 
-    def __call__(self, type=None, id=None, proxy=None, **kw):
+    def get(self, type=None, id=None, proxy=None, **kw):
         """Get a resource by its ID or a search filter
 
         Get an entry by its ID ::
 
-            api.entry(42)
+            api.entry.get(42)
 
         Finds an entry by it's title ::
 
-            api.entry(title='foo!')
+            api.entry.get(title='foo!')
 
         Find an entry by it's name, case insensitive ::
 
-            api.entry(name__iexact='FOO!')
+            api.entry.get(name__iexact='FOO!')
         """
 
         if proxy:
