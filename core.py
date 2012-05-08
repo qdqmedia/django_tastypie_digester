@@ -3,8 +3,10 @@
 import pprint
 import urlparse
 import urllib
+from django.conf import settings
 
 import requests
+import sys
 
 from .serializers import JsonSerializer
 from .exceptions import BadHttpStatus, ResourceTypeMissing, ResourceIdMissing, TooManyResources
@@ -25,8 +27,8 @@ class EndpointProxy(object):
     def _get_url(self):
         return '%s%s' % (self._api.base_url, self._endpoint_url)
 
-    def get(self, id=None, **kw):
-        return self._api.get(self._resource, id, **kw)
+    def one(self, id=None, **kw):
+        return self._api.one(self._resource, id, **kw)
 
     def many(self, *ids, **kw):
         return self._api.many(self._resource, *ids, **kw)
@@ -70,7 +72,7 @@ class ResourceProxy(object):
         Do nothing if already loaded.
         """
         if not self._resource:
-            self._resource = self._api.get(self._type, self._id)
+            self._resource = self._api.one(self._type, self._id)
         return self._resource
 
 
@@ -242,7 +244,7 @@ class ListProxy(ResourceListMixin):
         else:
             item = self._parse_item(item)
             if isinstance(item, ResourceProxy):
-                resource = self._api.get(proxy=item)
+                resource = self._api.one(proxy=item)
                 self._list[index] = resource
                 return resource
             else:
@@ -258,10 +260,13 @@ class ListProxy(ResourceListMixin):
 class Api(object):
     """The TastyPie client"""
 
-    def __init__(self, service_url, serializer=None):
+    def __init__(self, service_url, serializer=None, auth=None, config={}):
+        self._auth = auth
+        self._requests_config = config
+        if settings.DEBUG:
+            self._requests_config['verbose'] = sys.stdout
         self._service = Service(service_url)
-        self._serializer = JsonSerializer() if serializer is None \
-                                    else serializer
+        self._serializer = JsonSerializer() if serializer is None else serializer
         self._endpoints = self._get() # The API endpoint should return 
                                       # resource endpoints list.
 
@@ -279,8 +284,7 @@ class Api(object):
             http://localhost:1337/poney/?name__startswith=D
         """
         if attr in self._endpoints:
-            return EndpointProxy(self, self._endpoints[attr]['list_endpoint'],
-                                       self._endpoints[attr]['schema'])
+            return EndpointProxy(self, self._endpoints[attr]['list_endpoint'], self._endpoints[attr]['schema'])
         else:
             raise AttributeError(attr)
 
@@ -331,28 +335,27 @@ class Api(object):
         """Do a HTTP GET request"""
 
         url = self._get_url(type, id, **kw)
-        response = requests.get(url)
-        print response
+        response = requests.get(url, auth=self._auth, config=self._requests_config)
         if response.status_code != 200:
             raise BadHttpStatus(response)
         raw_data = response.content
         data = self._serializer.decode(raw_data)
         return data
 
-    def get(self, type=None, id=None, proxy=None, **kw):
+    def one(self, type=None, id=None, proxy=None, **kw):
         """Get a resource by its ID or a search filter
 
         Get an entry by its ID ::
 
-            api.entry.get(42)
+            api.entry.one(42)
 
         Finds an entry by it's title ::
 
-            api.entry.get(title='foo!')
+            api.entry.one(title='foo!')
 
         Find an entry by it's name, case insensitive ::
 
-            api.entry.get(name__iexact='FOO!')
+            api.entry.one(name__iexact='FOO!')
         """
 
         if proxy:
