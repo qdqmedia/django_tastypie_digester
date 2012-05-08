@@ -4,6 +4,7 @@ import pprint
 import urlparse
 import urllib
 from django.conf import settings
+from django.utils import simplejson
 
 import requests
 import sys
@@ -35,6 +36,15 @@ class EndpointProxy(object):
 
     def find(self, **kw):
         return self._api.find(self._resource, **kw)
+
+    def add(self, **kw):
+        return self._api.add(self._resource, **kw)
+
+    def update(self, id, **kw):
+        return self._api.update(self._resource, id, **kw)
+
+    def delete(self, id):
+        return self._api.delete(self._resource, id)
 
 
 class ResourceProxy(object):
@@ -68,7 +78,7 @@ class ResourceProxy(object):
 
     def _get(self):
         """Load the resource
-        
+
         Do nothing if already loaded.
         """
         if not self._resource:
@@ -93,7 +103,7 @@ class Resource(object):
             return self._resource[attr]
         else:
             raise AttributeError(attr)
-    
+
     def __getitem__(self, item):
         if item in self._resource:
             return self._resource[item]
@@ -130,9 +140,7 @@ class SearchResponse(ResourceListMixin):
         self._kw = kw
 
     def __repr__(self):
-        return '<SearchResponse %s (%s/%s)>' % (self._type,
-                                                len(self._resources),
-                                                self._total_count)
+        return '<SearchResponse %s (%s/%s)>' % (self._type, len(self._resources), self._total_count)
 
     def __len__(self):
         return self._total_count
@@ -142,8 +150,7 @@ class SearchResponse(ResourceListMixin):
             offset = index.start or 0
             limit = (index.stop - offset) if index.stop else 0
             limit = len(self) - offset
-            missing = [ index for index in range(offset, offset + limit)
-                          if index not in self._resources ]
+            missing = [ index for index in range(offset, offset + limit) if index not in self._resources ]
 
             if missing:
                 req_offset = min(missing)
@@ -180,7 +187,7 @@ class Service(object):
 
     def _parse_url(self, url):
         """Extracts the base URL and the base path from the service URL
-        
+
         >>> service.parse_url('http://foo.bar/1/')
         ('http://foo.bar', '/1/')
         """
@@ -189,8 +196,7 @@ class Service(object):
 
     def is_resource_url(self, obj):
         """Returns True if `obj` is a valid resource URL"""
-        return isinstance(obj, basestring) and \
-               obj.startswith(self.base_path)
+        return isinstance(obj, basestring) and obj.startswith(self.base_path)
 
     def parse_resource_url(self, url):
         """Parses a resource URL and returns a tuple of (resource, id)
@@ -227,9 +233,7 @@ class ListProxy(ResourceListMixin):
                             type = item._type
                             if type not in missing:
                                 missing[type] = {}
-                            # We assume a list only contains unique IDs
-                            # otherwise, we lose the list index of dupplicate
-                            # IDs.
+                            # We assume a list only contains unique IDs otherwise, we lose the list index of duplicate IDs.
                             missing[type][item._id] = index
                 for type in missing:
                     ids = missing[type].keys()
@@ -267,8 +271,7 @@ class Api(object):
             self._requests_config['verbose'] = sys.stdout
         self._service = Service(service_url)
         self._serializer = JsonSerializer() if serializer is None else serializer
-        self._endpoints = self._get() # The API endpoint should return 
-                                      # resource endpoints list.
+        self._endpoints = self._get() # The API endpoint should return resource endpoints list.
 
     def __repr__(self):
         return '<Api: %s>' % self._service.url
@@ -277,7 +280,7 @@ class Api(object):
         """
         Some magic to enable us to dynamically resolves the endpoints names on
         on the Api object.
-        
+
         For example :
             Api('http://localhost:1337/').poney.find(name__startswith='D')
         Generates an HTTP GET request on this URL :
@@ -288,9 +291,12 @@ class Api(object):
         else:
             raise AttributeError(attr)
 
+    def get_resources(self):
+        return dict((item, getattr(self, item)) for item in self._endpoints.keys())
+
     def _get_url(self, resource=None, id=None, **kw):
         """Generate an URL
-        
+
         1. The service URL is used as the base string (eg. "/api/1/")
         2. If a `resource` is given, it is appended (eg. "/api/1/country/")
             2.1. If an `id` is given, it is appended (eg. "/api/1/country/2/")
@@ -331,16 +337,36 @@ class Api(object):
     def _parse_resources(self, resources):
         return map(self._parse_resource, resources)
 
-    def _get(self, type=None, id=None, **kw):
-        """Do a HTTP GET request"""
+    def _request(self, url, request=requests.get, data=None, headers=None, **kw):
+        """
+        Does the request.
+        """
+        return request(url, auth=self._auth, config=self._requests_config, data=data, headers=headers)
 
-        url = self._get_url(type, id, **kw)
-        response = requests.get(url, auth=self._auth, config=self._requests_config)
+    def _get_by_url(self, url):
+        response = self._request(url)
         if response.status_code != 200:
-            raise BadHttpStatus(response)
+            self._raise_error(response)
         raw_data = response.content
         data = self._serializer.decode(raw_data)
         return data
+
+    def _raise_error(self, response):
+        content = response.content
+        message = ''
+        if content:
+            raw_data = content
+            data = self._serializer.decode(raw_data)
+            message = data.get('error_message', '')
+        message = '[%s] %s' % (response.status_code, message)
+        raise BadHttpStatus(message, response=response)
+
+    def _get(self, type=None, id=None, **kw):
+        """
+        Do a HTTP GET request
+        """
+        url = self._get_url(type, id, **kw)
+        return self._get_by_url(url)
 
     def one(self, type=None, id=None, proxy=None, **kw):
         """Get a resource by its ID or a search filter
@@ -405,3 +431,30 @@ class Api(object):
         meta = response['meta']
         resources = self._parse_resources(response['objects'])
         return SearchResponse(self, type, meta, resources, kw)
+
+    def add(self, type, **kw):
+        url = self._get_url(type)
+        headers = {'content-type': 'application/json'}
+        response = self._request(url, request=requests.post, data=simplejson.dumps(kw), headers=headers)
+        if response.status_code != 201:
+            self._raise_error(response)
+        response = self._get_by_url(response.headers['location'])
+        resource = self._parse_resource(response)
+        return resource
+
+    def update(self, type, id, **kw):
+        url = self._get_url(type, id)
+        headers = {'content-type': 'application/json'}
+        response = self._request(url, request=requests.patch, data=simplejson.dumps(kw), headers=headers)
+        if response.status_code != 202:
+            self._raise_error(response)
+        response = self._get_by_url(url)
+        resource = self._parse_resource(response)
+        return resource
+
+    def delete(self, type, id):
+        url = self._get_url(type, id)
+        response = self._request(url, request=requests.delete)
+        if response.status_code != 204:
+            self._raise_error(response)
+        return True

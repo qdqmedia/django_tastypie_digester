@@ -7,6 +7,7 @@ class BaseException(Exception):
     def __init__(self, message=None, **kw):
         for key, value in kw.items():
             setattr(self, key, value)
+        super(BaseException, self).__init__(message)
 
 
 class ApiError(BaseException):
@@ -31,8 +32,3 @@ class HttpError(BaseException):
 
 class BadHttpStatus(HttpError):
     """Invalid HTTP status"""
-
-    def __init__(self, response):
-        message = '%s returned an invalid status code: %s' \
-                  % (response.url, response.status_code)
-        super(BadHttpStatus, self).__init__(message, response=response)
