@@ -14,10 +14,6 @@ class ApiError(BaseException):
     """Raised by the Client"""
 
 
-class ResourceTypeMissing(ApiError):
-    """Resource type is missing"""
-
-
 class ResourceIdMissing(ApiError):
     """Resource ID is missing"""
 

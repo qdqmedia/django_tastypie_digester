@@ -10,7 +10,7 @@ import requests
 import sys
 
 from .serializers import JsonSerializer
-from .exceptions import BadHttpStatus, ResourceTypeMissing, ResourceIdMissing, TooManyResources
+from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
 
 
 class EndpointProxy(object):
@@ -114,6 +114,8 @@ class Resource(object):
         return attr in self._resource
 
 
+# TODO: zpruhlednit funkcnost ResourceListMixin
+# TODO: dat na ResourceListMixin napr. i vysledek api.many()
 class ResourceListMixin(object):
 
     def values(self):
@@ -127,6 +129,9 @@ class ResourceListMixin(object):
             return [ getattr(r, field) for r in self[:] ]
         else:
             return [ tuple(getattr(r, f) for f in fields) for r in self[:] ]
+
+    def __getitem__(self, index):
+        raise NotImplementedError()
 
 
 class SearchResponse(ResourceListMixin):
@@ -148,9 +153,8 @@ class SearchResponse(ResourceListMixin):
     def __getitem__(self, index):
         if isinstance(index, slice):
             offset = index.start or 0
-            limit = (index.stop - offset) if index.stop else 0
             limit = len(self) - offset
-            missing = [ index for index in range(offset, offset + limit) if index not in self._resources ]
+            missing = [index for index in range(offset, offset + limit) if index not in self._resources]
 
             if missing:
                 req_offset = min(missing)
@@ -163,7 +167,7 @@ class SearchResponse(ResourceListMixin):
                 for index, resource in enumerate(resources):
                     self._resources[req_offset + index] = resource
 
-            return [ self._resources[i] for i in range(offset, offset + limit) ]
+            return [self._resources[i] for i in range(offset, offset + limit)]
 
         else:
             if index >= len(self):
@@ -217,48 +221,48 @@ class ListProxy(ResourceListMixin):
     def __repr__(self):
         return pprint.pformat(self._list)
 
-    def __getitem__(self, index):
-        item = self._list[index]
-        if isinstance(item, list):
-            if item:
-                # index is a slice object
-                slice = index
-                items = map(self._parse_item, item)
-                missing = {}
-                for index, item in enumerate(items):
-                    if isinstance(item, ResourceProxy):
-                        if item._resource:
-                            items[index] = item._resource
-                        else:
-                            type = item._type
-                            if type not in missing:
-                                missing[type] = {}
-                            # We assume a list only contains unique IDs otherwise, we lose the list index of duplicate IDs.
-                            missing[type][item._id] = index
-                for type in missing:
-                    ids = missing[type].keys()
-                    resources = self._api.many(type, *ids)
-                    for id, resource in resources.items():
-                        index = missing[type][int(id)]
-                        items[index] = resource
-                self._list[slice] = items
-                return items
-            else:
-                return []
-        else:
-            item = self._parse_item(item)
-            if isinstance(item, ResourceProxy):
-                resource = self._api.one(proxy=item)
-                self._list[index] = resource
-                return resource
-            else:
-                return item
-
     def _parse_item(self, item):
         if self._service.is_resource_url(item):
             return ResourceProxy(item, self._service, self._api)
         else:
             return item
+
+    def _evaluate_item(self, item):
+        item = self._parse_item(item)
+        if isinstance(item, ResourceProxy):
+            return item._get()
+        return item
+
+    def __getitem__(self, index):
+        item = self._list[index]
+        if not item:
+            return []
+        if isinstance(item, list):
+            # index is a slice object
+            slice = index
+            items = map(self._parse_item, item)
+            missing = {}
+            for index, item in enumerate(items):
+                if isinstance(item, ResourceProxy):
+                    if item._resource:
+                        items[index] = item._resource
+                    else:
+                        type = item._type
+                        if type not in missing:
+                            missing[type] = {}
+                        # We assume a list only contains unique IDs otherwise, we lose the list index of duplicate IDs.
+                        missing[type][item._id] = index
+            for type in missing:
+                ids = missing[type].keys()
+                resources = self._api.many(type, *ids)
+                for id, resource in resources.items():
+                    index = missing[type][int(id)]
+                    items[index] = resource
+            self._list[slice] = items
+            return items
+        item = self._evaluate_item(item)
+        self._list[index] = item
+        return item
 
 
 class Api(object):
@@ -353,11 +357,11 @@ class Api(object):
 
     def _raise_error(self, response):
         content = response.content
-        message = ''
-        if content:
-            raw_data = content
-            data = self._serializer.decode(raw_data)
+        try:
+            data = self._serializer.decode(content)
             message = data.get('error_message', '')
+        except ValueError:
+            message = content
         message = '[%s] %s' % (response.status_code, message)
         raise BadHttpStatus(message, response=response)
 
@@ -368,7 +372,7 @@ class Api(object):
         url = self._get_url(type, id, **kw)
         return self._get_by_url(url)
 
-    def one(self, type=None, id=None, proxy=None, **kw):
+    def one(self, type, id=None, **kw):
         """Get a resource by its ID or a search filter
 
         Get an entry by its ID ::
@@ -383,15 +387,6 @@ class Api(object):
 
             api.entry.one(name__iexact='FOO!')
         """
-
-        if proxy:
-            if proxy._resource:
-                return proxy._resource
-            type = proxy._type
-            id = proxy._id
-        elif type is None:
-            raise ResourceTypeMissing
-
         if id is None:
             if not kw:
                 raise ResourceIdMissing
@@ -402,11 +397,9 @@ class Api(object):
         else:
             response = self._get(type, id, **kw)
             resource = self._parse_resource(response)
-            if proxy:
-                proxy._resource = resource
             return resource
 
-    def many(self, type, *ids, **kw):
+    def many(self, type, *ids):
         """Get multiple resources (of the same type) with an unique request
 
         Returns a list of `Resource` objects.
@@ -415,7 +408,7 @@ class Api(object):
             api.entry.many(17, 41)
         """
         id = 'set/' + ';'.join(map(str, ids))
-        response = self._get(type, id, **kw)
+        response = self._get(type, id)
         resources = self._parse_resources(response['objects'])
         # Transform a list of Resource in a dict using resource ID as key
         resources = dict([ (r.id, r) for r in resources ])
