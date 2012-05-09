@@ -1,16 +1,13 @@
-"""Core"""
-
 import pprint
 import urlparse
 import urllib
 from django.conf import settings
 from django.utils import simplejson
-
 import requests
 import sys
-
 from .serializers import JsonSerializer
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
+
 
 # TODO: refactor like QuerySet if possible
 class EndpointProxy(object):
@@ -133,16 +130,16 @@ class ResourceListMixin(object):
     #TODO!!!
     """
     def values(self):
-        return [ r._resource for r in self[:] ]
+        return [r._resource for r in self[:]]
 
     def values_list(self, *fields, **kw):
         if 'flat' in kw and kw['flat'] is True:
             if len(fields) != 1:
                 raise Exception('Can\'t flatten if more than 1 field')
             field = fields[0]
-            return [ getattr(r, field) for r in self[:] ]
+            return [getattr(r, field) for r in self[:]]
         else:
-            return [ tuple(getattr(r, f) for f in fields) for r in self[:] ]
+            return [tuple(getattr(r, f) for f in fields) for r in self[:]]
 
     def __getitem__(self, index):
         raise NotImplementedError()
@@ -437,7 +434,7 @@ class Api(object):
         response = self._get(type, id)
         resources = self._parse_resources(response['objects'])
         # Transform a list of Resource in a dict using resource ID as key
-        resources = dict([ (r.id, r) for r in resources ])
+        resources = dict([(r.id, r) for r in resources])
         # Add not found IDs to the dict
         if 'not_found' in response:
             for id in response['not_found']:
