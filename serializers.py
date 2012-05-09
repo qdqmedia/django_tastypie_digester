@@ -9,13 +9,27 @@ except ImportError:
     try:
         import simplejson as json
     except ImportError:
-        sys.write('ERROR: Please install the `json` or `simplejson` module')
+        sys.stderr.write('ERROR: Please install the `json` or `simplejson` module')
         sys.exit(-1)
 
 
-class JsonSerializer(object):
-    """Simple JSON serializer"""
+class SerializerInterface(object):
+    """
+    Any custom serializer has to implement this api.
+    """
+    def encode(self, data):
+        raise NotImplementedError
+
+    def decode(self, data):
+        raise NotImplementedError
+
+
+class JsonSerializer(SerializerInterface):
+    """
+    Simple JSON serializer
+    """
     def encode(self, data):
         return json.dumps(data)
+
     def decode(self, data):
         return json.loads(data)
