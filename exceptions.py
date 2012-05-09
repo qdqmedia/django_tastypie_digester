@@ -1,6 +1,7 @@
 """Exceptions"""
 
 
+# TODO: zrusit kw a udelat agrumenty explicitne
 class BaseException(Exception):
     """Base exception for the client"""
 

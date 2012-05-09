@@ -12,10 +12,13 @@ import sys
 from .serializers import JsonSerializer
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
 
-
+# TODO: refactor like QuerySet if possible
 class EndpointProxy(object):
-    """Proxy object to a service endpoint"""
+    """
+    Proxy object to a service endpoint
 
+    E.g. api.mailing
+    """
     def __init__(self, api, endpoint_url, schema_url):
         self._api = api
         self._endpoint_url = endpoint_url
@@ -47,12 +50,46 @@ class EndpointProxy(object):
         return self._api.delete(self._resource, id)
 
 
+class Resource(object):
+    """
+    A fetched resource
+
+    E.g. api.mailing.one(1)
+    """
+    def __init__(self, resource, type, id, url):
+        self._resource = resource
+        self._type = type
+        self._id = id
+        self._url = url
+
+    def __repr__(self):
+        return '<Resource %s: %s>' % (self._url, self._resource)
+
+    def __getattr__(self, attr):
+        if attr in self._resource:
+            return self._resource[attr]
+        else:
+            raise AttributeError(attr)
+
+    def __getitem__(self, item):
+        if item in self._resource:
+            return self._resource[item]
+        else:
+            raise KeyError(item)
+
+    def __contains__(self, attr):
+        return attr in self._resource
+
+
 class ResourceProxy(object):
-    """Proxy object to a resource
+    """
+    Proxy object to not evaluated resource
+    (like resource property pointing to another resource)
 
     It lazily fetches data.
-    """
 
+    E.g. api.mailing.one(1).user
+    """
     def __init__(self, url, service, api):
         self._url = url
         self._service = service
@@ -86,38 +123,15 @@ class ResourceProxy(object):
         return self._resource
 
 
-class Resource(object):
-    """A fetched resource"""
-
-    def __init__(self, resource, type, id, url):
-        self._resource = resource
-        self._type = type
-        self._id = id
-        self._url = url
-
-    def __repr__(self):
-        return '<Resource %s: %s>' % (self._url, self._resource)
-
-    def __getattr__(self, attr):
-        if attr in self._resource:
-            return self._resource[attr]
-        else:
-            raise AttributeError(attr)
-
-    def __getitem__(self, item):
-        if item in self._resource:
-            return self._resource[item]
-        else:
-            raise KeyError(item)
-
-    def __contains__(self, attr):
-        return attr in self._resource
-
-
-# TODO: zpruhlednit funkcnost ResourceListMixin
+# TODO: zpruhlednit funkcnost ResourceListMixin, udelat z neho list
 # TODO: dat na ResourceListMixin napr. i vysledek api.many()
 class ResourceListMixin(object):
+    """
+    Helper for lists.
 
+    Used only for some lists and not in very clear way.
+    #TODO!!!
+    """
     def values(self):
         return [ r._resource for r in self[:] ]
 
@@ -135,8 +149,11 @@ class ResourceListMixin(object):
 
 
 class SearchResponse(ResourceListMixin):
-    """A service response containing multiple resources"""
+    """
+    A service response containing multiple resources
 
+    E.g. api.mailing.find(...)
+    """
     def __init__(self, api, type, meta, resources, kw={}):
         self._api = api
         self._type = type
@@ -182,37 +199,14 @@ class SearchResponse(ResourceListMixin):
             return self._resources[index]
 
 
-class Service(object):
-    """Describe a service"""
-
-    def __init__(self, url):
-        self.url = url
-        self.base_url, self.base_path = self._parse_url(url)
-
-    def _parse_url(self, url):
-        """Extracts the base URL and the base path from the service URL
-
-        >>> service.parse_url('http://foo.bar/1/')
-        ('http://foo.bar', '/1/')
-        """
-        proto, host, path = urlparse.urlsplit(url)[0:3]
-        return '%s://%s' % (proto, host), path
-
-    def is_resource_url(self, obj):
-        """Returns True if `obj` is a valid resource URL"""
-        return isinstance(obj, basestring) and obj.startswith(self.base_path)
-
-    def parse_resource_url(self, url):
-        """Parses a resource URL and returns a tuple of (resource, id)
-
-        `resource` is the resource type, and `id` is the resource id.
-        """
-        return url.split('/')[-3:-1]
-
-
 class ListProxy(ResourceListMixin):
-    """Acts like a `list` but resolves ResourceProxy objects on access"""
+    """
+    List of connected ToMany items.
 
+    Acts like a `list` but resolves ResourceProxy objects on access.
+
+    E.g. api.user.one(1).mailings
+    """
     def __init__(self, list, service, api):
         self._list = list
         self._service = service
@@ -265,9 +259,41 @@ class ListProxy(ResourceListMixin):
         return item
 
 
-class Api(object):
-    """The TastyPie client"""
+class Service(object):
+    """
+    Describe a service.
 
+    Does the url juggling.
+    """
+    def __init__(self, url):
+        self.url = url
+        self.base_url, self.base_path = self._parse_url(url)
+
+    def _parse_url(self, url):
+        """Extracts the base URL and the base path from the service URL
+
+        >>> service.parse_url('http://foo.bar/1/')
+        ('http://foo.bar', '/1/')
+        """
+        proto, host, path = urlparse.urlsplit(url)[0:3]
+        return '%s://%s' % (proto, host), path
+
+    def is_resource_url(self, obj):
+        """Returns True if `obj` is a valid resource URL"""
+        return isinstance(obj, basestring) and obj.startswith(self.base_path)
+
+    def parse_resource_url(self, url):
+        """Parses a resource URL and returns a tuple of (resource, id)
+
+        `resource` is the resource type, and `id` is the resource id.
+        """
+        return url.split('/')[-3:-1]
+
+
+class Api(object):
+    """
+    The TastyPie client
+    """
     def __init__(self, service_url, serializer=None, auth=None, config={}):
         self._auth = auth
         self._requests_config = config
