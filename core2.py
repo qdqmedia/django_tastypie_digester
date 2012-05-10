@@ -11,75 +11,6 @@ from .serializers import JsonSerializer
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
 
 
-# TODO: refactor like QuerySet if possible
-class EndpointProxy(object):
-    """
-    Proxy object to a service endpoint
-
-    E.g. api.mailing
-    """
-    def __init__(self, api, endpoint_url, schema_url):
-        self.api = api
-        self._endpoint_url = endpoint_url
-        self._schema_url = schema_url
-        self._resource = filter(bool, endpoint_url.split('/'))[-1]
-
-    def __repr__(self):
-        return '<EndpointProxy %s>' % self.api.get_url(self._resource)
-
-    def get_url(self):
-        return '%s%s' % (self.api.base_url, self._endpoint_url)
-
-    def one(self, id=None, **kw):
-        return self.api.one(self._resource, id, **kw)
-
-    def many(self, *ids, **kw):
-        return self.api.many(self._resource, *ids, **kw)
-
-    def find(self, **kw):
-        return self.api.find(self._resource, **kw)
-
-    def add(self, **kw):
-        return self.api.add(self._resource, **kw)
-
-    def update(self, id, **kw):
-        return self.api.update(self._resource, id, **kw)
-
-    def delete(self, id):
-        return self.api.delete(self._resource, id)
-
-
-class Resource(object):
-    """
-    A fetched resource
-
-    E.g. api.mailing.one(1)
-    """
-    def __init__(self, resource, type, id, url):
-        self._resource = resource
-        self._type = type
-        self._id = id
-        self._url = url
-
-    def __repr__(self):
-        return '<Resource %s: %s>' % (self._url, self._resource)
-
-    def __getattr__(self, attr):
-        if attr in self._resource:
-            return self._resource[attr]
-        else:
-            raise AttributeError(attr)
-
-    def __getitem__(self, item):
-        if item in self._resource:
-            return self._resource[item]
-        else:
-            raise KeyError(item)
-
-    def __contains__(self, attr):
-        return attr in self._resource
-
-
 class ResourceProxy(object):
     """
     Proxy object to not evaluated resource
@@ -87,27 +18,23 @@ class ResourceProxy(object):
 
     It lazily fetches data.
 
-    E.g. api.mailing.one(1).user
+    E.g. api.mailing.get(1).user
     """
-    def __init__(self, url, service, api):
-        self._url = url
-        self._service = service
-        self.api = api
-        self._type, id = self._service.get_resource_ident(self._url)
-        self._id = int(id)
+    def __init__(self, endpoint, id):
+        assert isinstance(endpoint, EndpointProxy)
+        assert isinstance(id, basestring)
+        self._endpoint = endpoint
+        self._id = id
         self._resource = None
 
     def __repr__(self):
         if self._resource:
             return repr(self._resource)
         else:
-            return '<ResourceProxy %s/%s>' % (self._type, self._id)
+            return '<ResourceProxy %s/%s>' % (self._endpoint.resource_name, self._id)
 
     def __getattr__(self, attr):
         return getattr(self.get(), attr)
-
-    def __getitem__(self, item):
-        return self.get()[item]
 
     def __contains__(self, attr):
         return attr in self.get()
@@ -118,8 +45,15 @@ class ResourceProxy(object):
         Do nothing if already loaded.
         """
         if not self._resource:
-            self._resource = self.api.one(self._type, self._id)
+            self._resource = self._endpoint.get(self._id)
         return self._resource
+
+    @classmethod
+    def manufacture(cls, api, url):
+        assert isinstance(api, Api)
+        assert isinstance(url, basestring)
+        name, id = api.parser.get_resource_ident(url)
+        return cls(api.get_endpoint(name), id)
 
 
 # TODO: zpruhlednit funkcnost ResourceListMixin, udelat z neho list
@@ -153,19 +87,19 @@ class ListProxy(ResourceListMixin):
 
     Acts like a `list` but resolves ResourceProxy objects on access.
 
-    E.g. api.user.one(1).mailings
+    E.g. api.user.get(1).mailings
     """
-    def __init__(self, list, service, api):
+    def __init__(self, api, list):
+        assert isinstance(api, Api)
         self._list = list
-        self._service = service
         self.api = api
 
     def __repr__(self):
         return pprint.pformat(self._list)
 
     def _parse_item(self, item):
-        if self._service.is_resource_url(item):
-            return ResourceProxy(item, self._service, self.api)
+        if self.api.parser.is_resource_url(item):
+            return ResourceProxy.manufacture(self.api, item)
         else:
             return item
 
@@ -189,7 +123,7 @@ class ListProxy(ResourceListMixin):
                     if item._resource:
                         items[index] = item._resource
                     else:
-                        type = item._type
+                        type = item._name
                         if type not in missing:
                             missing[type] = {}
                         # We assume a list only contains unique IDs otherwise, we lose the list index of duplicate IDs.
@@ -268,7 +202,7 @@ class Resource(object):
 
     Its data available as properties.
 
-    E.g. api.mailing.one(1)
+    E.g. api.mailing.get(1)
     """
     def __init__(self, endpoint, data, name, id, url):
         assert isinstance(endpoint, EndpointProxy)
@@ -295,12 +229,6 @@ class Resource(object):
         else:
             raise AttributeError(attr)
 
-    def __getitem__(self, item):
-        if item in self._data:
-            return self._data[item]
-        else:
-            raise KeyError(item)
-
     def __contains__(self, attr):
         return attr in self._data
 
@@ -322,12 +250,12 @@ class Resource(object):
 
         for attr, value in data.items():
             if endpoint.api.parser.is_resource_url(value):
-                data[attr] = ResourceProxy(value, endpoint.api.parser, endpoint.api)
+                data[attr] = ResourceProxy.manufacture(endpoint.api, value)
             elif isinstance(value, list):
-                data[attr] = ListProxy(value, endpoint.api.parser, endpoint.api)
+                data[attr] = ListProxy(endpoint.api, value)
 
         resource_name, resource_id = endpoint.api.parser.get_resource_ident(url)
-        return Resource(endpoint, data, resource_name, resource_id, url)
+        return cls(endpoint, data, resource_name, resource_id, url)
 
     @classmethod
     def manufacture_many(cls, endpoint, data):
@@ -340,12 +268,12 @@ class Resource(object):
         """
         assert isinstance(endpoint, EndpointProxy)
         assert hasattr(data, '__iter__')
-        return [Resource.manufacture(endpoint, item) for item in data]
+        return [cls.manufacture(endpoint, item) for item in data]
 
 
 class EndpointProxy(object):
     """
-    Proxy object to a service endpoint
+    Proxy object to a resource endpoint
 
     E.g. api.mailing
     """
@@ -365,9 +293,19 @@ class EndpointProxy(object):
         )
 
     def get_url(self):
+        """
+        Returns endpoint url.
+
+        :returns: str
+        """
         return self.api.get_url(self.resource_name)
 
     def get_schema_url(self):
+        """
+        Returns endpoint schema url.
+
+        :returns: str
+        """
         return '%s%s' % (self.api.parser.base_url, self._schema_url)
 
     def get_schema(self):
@@ -473,6 +411,7 @@ class Parser(object):
 
         :returns: 2-tuple (str, str)
         """
+        assert isinstance(url, basestring)
         proto, host, path = urlparse.urlsplit(url)[0:3]
         return '%s://%s' % (proto, host), path
 
@@ -493,6 +432,7 @@ class Parser(object):
 
         :returns: 2-tuple (str, str)
         """
+        assert isinstance(url, basestring)
         return url.split('/')[-3:-1]
 
 
@@ -533,6 +473,7 @@ class Api(object):
 
         :returns: EndpointProxy
         """
+        assert isinstance(name, basestring)
         if name in self._endpoints:
             return EndpointProxy(self, self._endpoints[name]['list_endpoint'], self._endpoints[name]['schema'])
         else:
@@ -623,6 +564,7 @@ class Api(object):
 
         :raises: BadHttpStatus
         """
+        assert isinstance(response, requests.models.Response)
         content = response.content
         try:
             data = self._serializer.decode(content)
