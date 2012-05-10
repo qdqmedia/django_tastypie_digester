@@ -1,4 +1,4 @@
-import pprint
+from math import ceil
 import urlparse
 import urllib
 from django.conf import settings
@@ -13,12 +13,15 @@ from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
 
 class ResourceProxy(object):
     """
-    Proxy object to not evaluated resource
+    Proxy to not evaluated resource.
     (like resource property pointing to another resource)
 
     It lazily fetches data.
 
     E.g. api.mailing.get(1).user
+
+    :param: endpoint: EndpointProxy
+    :param: id: basestring
     """
     def __init__(self, endpoint, id):
         assert isinstance(endpoint, EndpointProxy)
@@ -31,18 +34,21 @@ class ResourceProxy(object):
         if self._resource:
             return repr(self._resource)
         else:
-            return '<ResourceProxy %s/%s>' % (self._endpoint.resource_name, self._id)
+            return '<%s %s/%s>' % (
+                self.__class__.__name__,
+                self._endpoint.resource_name,
+                self._id
+            )
 
     def __getattr__(self, attr):
-        return getattr(self.get(), attr)
+        """
+        E.g. api.mailing.get(1).user.username
+        """
+        return getattr(self._fetch(), attr)
 
-    def __contains__(self, attr):
-        return attr in self.get()
-
-    def get(self):
-        """Load the resource
-
-        Do nothing if already loaded.
+    def _fetch(self):
+        """
+        Returns, possibly fetches resource.
         """
         if not self._resource:
             self._resource = self._endpoint.get(self._id)
@@ -50,118 +56,156 @@ class ResourceProxy(object):
 
     @classmethod
     def manufacture(cls, api, url):
+        """
+        Manufactures ResourceProxy object.
+
+        :param: api: Api
+        :param: url: basestring
+        :returns: ResourceProxy
+        """
         assert isinstance(api, Api)
         assert isinstance(url, basestring)
         name, id = api.parser.get_resource_ident(url)
-        return cls(api.get_endpoint(name), id)
+        endpoint = api.get_endpoint(name)
+        return ResourceProxy(endpoint, id)
 
 
-# TODO: zpruhlednit funkcnost ResourceListMixin, udelat z neho list
-# TODO: dat na ResourceListMixin napr. i vysledek api.many()
-class ResourceListMixin(object):
+class ResourceProxyList(object):
     """
-    Helper for lists.
+    List of ResourceProxy.
 
-    Used only for some lists and not in very clear way.
-    #TODO!!!
-    """
-    def values(self):
-        return [r._resource for r in self[:]]
-
-    def values_list(self, *fields, **kw):
-        if 'flat' in kw and kw['flat'] is True:
-            if len(fields) != 1:
-                raise Exception('Can\'t flatten if more than 1 field')
-            field = fields[0]
-            return [getattr(r, field) for r in self[:]]
-        else:
-            return [tuple(getattr(r, f) for f in fields) for r in self[:]]
-
-    def __getitem__(self, index):
-        raise NotImplementedError()
-
-
-class ListProxy(ResourceListMixin):
-    """
-    List of connected ToMany items.
-
-    Acts like a `list` but resolves ResourceProxy objects on access.
+    Evaluated lazily.
 
     E.g. api.user.get(1).mailings
+
+    :const: PAGE_ROWS: How many records should fetch on one page on evaluation.
+    :param: endpoint: EndpointProxy
+    :param: ids: list
     """
-    def __init__(self, api, list):
-        assert isinstance(api, Api)
-        self._list = list
-        self.api = api
+    PAGE_ROWS = 20
+
+    def __init__(self, endpoint, ids):
+        assert isinstance(endpoint, EndpointProxy)
+        assert isinstance(ids, list)
+        self._endpoint = endpoint
+        self._ids = ids
+        self._resources = {}
+        self._is_fetched = False
+
+    def __iter__(self):
+        """
+        Iterates resources.
+
+        Fetches them if not fetched before. Fetches them page after page.
+
+        :yields: Resource
+        """
+        generator = self._resources.itervalues() if self._is_fetched else self._fetch()
+        for item in generator:
+            yield item
+
+    def __getitem__(self, item):
+        """
+        Returns single resource.
+
+        For getting more resources, use iteration.
+
+        :returns: Resource
+        """
+        item = str(item)
+        if item not in self._ids:
+            raise KeyError(item)
+        if item not in self._resources:
+            self._resources[item] = self._endpoint.get(item)
+        return self._resources[item]
 
     def __repr__(self):
-        return pprint.pformat(self._list)
+        return '<%s %s, total count: %s>' % (
+            self.__class__.__name__,
+            self._endpoint.resource_name,
+            len(self._ids)
+            )
 
-    def _parse_item(self, item):
-        if self.api.parser.is_resource_url(item):
-            return ResourceProxy.manufacture(self.api, item)
-        else:
-            return item
+    def _fetch(self):
+        """
+        Fetches resources page by page.
 
-    def _evaluate_item(self, item):
-        item = self._parse_item(item)
-        if isinstance(item, ResourceProxy):
-            return item.get()
-        return item
+        :yields: Resource
+        """
+        self._is_fetched = True
+        pages_count = int(ceil(len(self._ids) / self.PAGE_ROWS))
+        for page_num in range(pages_count):
+            offset = page_num * self.PAGE_ROWS
+            onset = offset + self.PAGE_ROWS
+            ids_slice = self._ids[offset:onset]
+            for key, val in self._endpoint.get_many(*ids_slice).iteritems():
+                self._resources[key] = val
+                yield val
 
-    def __getitem__(self, index):
-        item = self._list[index]
-        if not item:
+    @classmethod
+    def manufacture(cls, api, data):
+        """
+        Factory for ResourceProxyList.
+
+        :param: api: Api
+        :param: data: list
+        :returns: ResourceProxyList
+        """
+        assert isinstance(api, Api)
+        assert isinstance(data, list)
+        if not data:
             return []
-        if isinstance(item, list):
-            # index is a slice object
-            slice = index
-            items = map(self._parse_item, item)
-            missing = {}
-            for index, item in enumerate(items):
-                if isinstance(item, ResourceProxy):
-                    if item._resource:
-                        items[index] = item._resource
-                    else:
-                        type = item._name
-                        if type not in missing:
-                            missing[type] = {}
-                        # We assume a list only contains unique IDs otherwise, we lose the list index of duplicate IDs.
-                        missing[type][item._id] = index
-            for type in missing:
-                ids = missing[type].keys()
-                resources = self.api.many(type, *ids)
-                for id, resource in resources.items():
-                    index = missing[type][int(id)]
-                    items[index] = resource
-            self._list[slice] = items
-            return items
-        item = self._evaluate_item(item)
-        self._list[index] = item
-        return item
+        ids = []
+        for item in data:
+            name, id = api.parser.get_resource_ident(item)
+            ids.append(id)
+        endpoint = api.get_endpoint(name)
+        return ResourceProxyList(endpoint, ids)
 
 
-class ResourceListProxy(object):
+class ResourceList(object):
+    """
+    Resource list.
 
+    Endpoint helper for paginated lists.
+
+    E.g.
+        api.mailing.all()
+        api.mailing.filter(...)
+
+    :param: endpoint: EndpointProxy
+    :param: meta: dict
+    :param: filters: dict
+    """
     def __init__(self, endpoint, meta, filters):
         assert isinstance(endpoint, EndpointProxy)
         assert isinstance(meta, dict)
         assert isinstance(filters, dict)
         self.endpoint = endpoint
         self._resources = []
-        self._fetched = False
+        self._is_fetched = False
         self._meta = meta
         self._filters = filters
 
     def count(self):
-        return self._meta['total_count']
+        """
+        Returns total items count.
+
+        :returns: int
+        """
+        return int(self._meta['total_count'])
 
     @property
     def resource_name(self):
         return self.endpoint.resource_name
 
     def _fetch_resources(self):
-        self._fetched = True
+        """
+        Used by iteration. Fetches all resources page by page.
+
+        :yields: Resource
+        """
+        self._is_fetched = True
         data = self.endpoint.api.get(self.resource_name, **self._filters)
         resources = Resource.manufacture_many(self.endpoint, data['objects'])
         self._resources += resources
@@ -172,6 +216,11 @@ class ResourceListProxy(object):
             yield item
 
     def _iterate_pages(self, next):
+        """
+        Iterates pages.
+
+        :yields: Resource
+        """
         if not next:
             return
         data = self.endpoint.api.get_by_relative_url(next)
@@ -184,7 +233,14 @@ class ResourceListProxy(object):
             yield item
 
     def __iter__(self):
-        generator = self._resources if self._fetched else self._fetch_resources()
+        """
+        Iterates all the resources belonged resources.
+
+        Fetches them if not fetched before. Fetches them page after page.
+
+        :yields: Resource
+        """
+        generator = self._resources if self._is_fetched else self._fetch_resources()
         for item in generator:
             yield item
 
@@ -198,28 +254,33 @@ class ResourceListProxy(object):
 
 class Resource(object):
     """
-    A fetched resource
+    Resource
 
-    Its data available as properties.
+    Its data are available as properties.
 
     E.g. api.mailing.get(1)
+
+    :param: endpoint: EndpointProxy
+    :param: data: dict
+    :param: id: basestring
     """
-    def __init__(self, endpoint, data, name, id, url):
+    def __init__(self, endpoint, data, id):
         assert isinstance(endpoint, EndpointProxy)
         assert isinstance(data, dict)
-        assert isinstance(name, basestring)
         assert isinstance(id, basestring)
-        assert isinstance(url, basestring)
         self.endpoint = endpoint
         self._data = data
-        self._name = name
         self._id = id
-        self._url = url
+
+    @property
+    def name(self):
+        return self.endpoint.resource_name
 
     def __repr__(self):
-        return '<%s %s: %s>' % (
+        return '<%s %s/%s: %s>' % (
             self.__class__.__name__,
-            self._url,
+            self.name,
+            self._id,
             self._data
         )
 
@@ -228,9 +289,6 @@ class Resource(object):
             return self._data[attr]
         else:
             raise AttributeError(attr)
-
-    def __contains__(self, attr):
-        return attr in self._data
 
     @classmethod
     def manufacture(cls, endpoint, data):
@@ -247,15 +305,13 @@ class Resource(object):
         assert isinstance(data, dict)
         url = data['resource_uri']
         del data['resource_uri']
-
         for attr, value in data.items():
             if endpoint.api.parser.is_resource_url(value):
                 data[attr] = ResourceProxy.manufacture(endpoint.api, value)
             elif isinstance(value, list):
-                data[attr] = ListProxy(endpoint.api, value)
-
+                data[attr] = ResourceProxyList.manufacture(endpoint.api, value)
         resource_name, resource_id = endpoint.api.parser.get_resource_ident(url)
-        return cls(endpoint, data, resource_name, resource_id, url)
+        return Resource(endpoint, data, resource_id)
 
     @classmethod
     def manufacture_many(cls, endpoint, data):
@@ -268,14 +324,18 @@ class Resource(object):
         """
         assert isinstance(endpoint, EndpointProxy)
         assert hasattr(data, '__iter__')
-        return [cls.manufacture(endpoint, item) for item in data]
+        return [Resource.manufacture(endpoint, item) for item in data]
 
 
 class EndpointProxy(object):
     """
-    Proxy object to a resource endpoint
+    Proxy to resource endpoint
 
     E.g. api.mailing
+
+    :param: api: Api
+    :param: endpoint_url: basestring
+    :param: schema_url: basestring
     """
     def __init__(self, api, endpoint_url, schema_url):
         assert isinstance(api, Api)
@@ -374,7 +434,7 @@ class EndpointProxy(object):
         """
         data = self.api.get(self.resource_name, **kwargs)
         meta = data['meta']
-        return ResourceListProxy(self, meta, kwargs)
+        return ResourceList(self, meta, kwargs)
 
     def add(self, **kwargs):
         """
@@ -396,6 +456,8 @@ class EndpointProxy(object):
 class Parser(object):
     """
     Service url parser.
+
+    :param: url: basestring
     """
     def __init__(self, url):
         assert isinstance(url, basestring)
@@ -440,8 +502,12 @@ class Api(object):
     """
     The TastyPie client
 
-    E.g.
-    api = Api('http://127.0.0.1:8000/api/v1/', auth=('martin', '***'))
+    E.g. api = Api('http://127.0.0.1:8000/api/v1/', auth=('martin', '***'))
+
+    :param: service_url: basestring
+    :param: serializer: None|SerializerInterface
+    :param: auth: tuple|AuthBase
+    :param: config: dict
     """
     def __init__(self, service_url, serializer=None, auth=None, config={}):
         assert isinstance(service_url, basestring)
