@@ -1,14 +1,11 @@
-"""Exceptions"""
 
 
-# TODO: zrusit kw a udelat agrumenty explicitne
 class BaseException(Exception):
     """Base exception for the client"""
 
-    def __init__(self, message='', **kw):
-        for key, value in kw.items():
-            setattr(self, key, value)
+    def __init__(self, message='', response=None):
         super(BaseException, self).__init__(message)
+        self.response = response
 
 
 class ApiError(BaseException):

@@ -6,10 +6,8 @@ from django.utils import simplejson
 import requests
 import sys
 from requests.auth import AuthBase
-from django_tastypie_digester.exceptions import ResourceDeleted
-from django_tastypie_digester.serializers import SerializerInterface
-from .serializers import JsonSerializer
-from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
+from .serializers import JsonSerializer, SerializerInterface
+from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources, ResourceDeleted
 
 
 class ResourceProxy(object):
