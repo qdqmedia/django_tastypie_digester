@@ -6,6 +6,7 @@ from django.utils import simplejson
 import requests
 import sys
 from requests.auth import AuthBase
+from django_tastypie_digester.exceptions import ResourceDeleted
 from django_tastypie_digester.serializers import SerializerInterface
 from .serializers import JsonSerializer
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
@@ -42,7 +43,12 @@ class ResourceProxy(object):
 
     def __getattr__(self, attr):
         """
+        Returns resource property.
+
         E.g. api.mailing.get(1).user.username
+
+        :raises: AttributeError
+        :returns: mixed
         """
         return getattr(self._fetch(), attr)
 
@@ -271,10 +277,14 @@ class Resource(object):
         self.endpoint = endpoint
         self._data = data
         self._id = id
+        self._is_deleted = False
 
     @property
     def name(self):
         return self.endpoint.resource_name
+
+    def get_url(self):
+        return self.endpoint.api.get_url(self.name, self._id)
 
     def __repr__(self):
         return '<%s %s/%s: %s>' % (
@@ -285,10 +295,51 @@ class Resource(object):
         )
 
     def __getattr__(self, attr):
+        """
+        Returns resource property.
+
+        E.g. api.mailing.get(1).email
+
+        :raises: AttributeError
+        :returns: mixed
+        """
         if attr in self._data:
             return self._data[attr]
         else:
             raise AttributeError(attr)
+
+    def update(self, **kw):
+        """
+        Updates resources by PATCH request and returns updated resource.
+
+        :keyword params: resource fields
+        :raises: BadHttpStatus if returned status is not 202
+        :returns: Resource
+        """
+        if self._is_deleted:
+            raise ResourceDeleted
+        url = self.get_url()
+        headers = {'content-type': 'application/json'}
+        response = self.endpoint.api.request(url, request=requests.patch, data=simplejson.dumps(kw), headers=headers)
+        if response.status_code != 202:
+            self.endpoint.api.raise_error(response)
+        return self.endpoint.get(self._id)
+
+    def delete(self):
+        """
+        Deletes resource by DELETE request.
+
+        :raises: BadHttpStatus if returned status is not 204
+        :returns: True
+        """
+        if self._is_deleted:
+            raise ResourceDeleted
+        url = self.get_url()
+        response = self.endpoint.api.request(url, request=requests.delete)
+        if response.status_code != 204:
+            self.endpoint.api.raise_error(response)
+        self._is_deleted = True
+        return True
 
     @classmethod
     def manufacture(cls, endpoint, data):
@@ -382,6 +433,7 @@ class EndpointProxy(object):
 
         Specified by id or by django QuerySet filter attributes.
 
+        :raises: BadHttpStatus if returned status is not 200
         :returns: Resource
         """
         if id:
@@ -401,6 +453,7 @@ class EndpointProxy(object):
         Specified by ids.
         This doesn't have paging so you get all the records you want.
 
+        :raises: BadHttpStatus if returned status is not 200
         :returns: dict(str(resource id): Resource)
         """
         id = 'set/' + ';'.join(map(str, ids))
@@ -420,6 +473,7 @@ class EndpointProxy(object):
 
         If you want to walk trough ALL resources. Use self.__iter__()
 
+        :raises: BadHttpStatus if returned status is not 200
         :returns: SearchResponse
         """
         return self.filter()
@@ -430,6 +484,7 @@ class EndpointProxy(object):
 
         Specified by django QuerySet filter attributes.
 
+        :raises: BadHttpStatus if returned status is not 200
         :returns: SearchResponse
         """
         data = self.api.get(self.resource_name, **kwargs)
@@ -442,6 +497,7 @@ class EndpointProxy(object):
 
         Issues POST to endpoint url with resource parameters given as **kwargs.
 
+        :raises: BadHttpStatus if returned status is not 201
         :returns: Resource
         """
         url = self.get_url()
@@ -525,6 +581,8 @@ class Api(object):
     def __getattr__(self, name):
         """
         Summons endpoints.
+
+        E.g. api.mailing
 
         :returns: EndpointProxy
         """
