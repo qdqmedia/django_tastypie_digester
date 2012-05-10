@@ -1,384 +1,694 @@
-import pprint
+from math import ceil
 import urlparse
 import urllib
 from django.conf import settings
 from django.utils import simplejson
 import requests
 import sys
+from requests.auth import AuthBase
+from django_tastypie_digester.exceptions import ResourceDeleted
+from django_tastypie_digester.serializers import SerializerInterface
 from .serializers import JsonSerializer
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources
 
 
-# TODO: refactor like QuerySet if possible
-class EndpointProxy(object):
-    """
-    Proxy object to a service endpoint
-
-    E.g. api.mailing
-    """
-    def __init__(self, api, endpoint_url, schema_url):
-        self._api = api
-        self._endpoint_url = endpoint_url
-        self._schema_url = schema_url
-        self._resource = filter(bool, endpoint_url.split('/'))[-1]
-
-    def __repr__(self):
-        return '<EndpointProxy %s>' % self._api._get_url(self._resource)
-
-    def _get_url(self):
-        return '%s%s' % (self._api.base_url, self._endpoint_url)
-
-    def one(self, id=None, **kw):
-        return self._api.one(self._resource, id, **kw)
-
-    def many(self, *ids, **kw):
-        return self._api.many(self._resource, *ids, **kw)
-
-    def find(self, **kw):
-        return self._api.find(self._resource, **kw)
-
-    def add(self, **kw):
-        return self._api.add(self._resource, **kw)
-
-    def update(self, id, **kw):
-        return self._api.update(self._resource, id, **kw)
-
-    def delete(self, id):
-        return self._api.delete(self._resource, id)
-
-
-class Resource(object):
-    """
-    A fetched resource
-
-    E.g. api.mailing.one(1)
-    """
-    def __init__(self, resource, type, id, url):
-        self._resource = resource
-        self._type = type
-        self._id = id
-        self._url = url
-
-    def __repr__(self):
-        return '<Resource %s: %s>' % (self._url, self._resource)
-
-    def __getattr__(self, attr):
-        if attr in self._resource:
-            return self._resource[attr]
-        else:
-            raise AttributeError(attr)
-
-    def __getitem__(self, item):
-        if item in self._resource:
-            return self._resource[item]
-        else:
-            raise KeyError(item)
-
-    def __contains__(self, attr):
-        return attr in self._resource
-
-
 class ResourceProxy(object):
     """
-    Proxy object to not evaluated resource
+    Proxy to not evaluated resource.
     (like resource property pointing to another resource)
 
     It lazily fetches data.
 
-    E.g. api.mailing.one(1).user
+    E.g. api.mailing.get(1).user
+
+    :param: endpoint: EndpointProxy
+    :param: id: basestring
     """
-    def __init__(self, url, service, api):
-        self._url = url
-        self._service = service
-        self._api = api
-        self._type, id = self._service.parse_resource_url(self._url)
-        self._id = int(id)
+    def __init__(self, endpoint, id):
+        assert isinstance(endpoint, EndpointProxy)
+        assert isinstance(id, basestring)
+        self._endpoint = endpoint
+        self._id = id
         self._resource = None
 
     def __repr__(self):
         if self._resource:
             return repr(self._resource)
         else:
-            return '<ResourceProxy %s/%s>' % (self._type, self._id)
+            return '<%s %s/%s>' % (
+                self.__class__.__name__,
+                self._endpoint.resource_name,
+                self._id
+            )
 
     def __getattr__(self, attr):
-        return getattr(self._get(), attr)
+        """
+        Returns resource property.
 
-    def __getitem__(self, item):
-        return self._get()[item]
+        E.g. api.mailing.get(1).user.username
 
-    def __contains__(self, attr):
-        return attr in self._get()
+        :raises: AttributeError
+        :returns: mixed
+        """
+        return getattr(self._fetch(), attr)
 
-    def _get(self):
-        """Load the resource
-
-        Do nothing if already loaded.
+    def _fetch(self):
+        """
+        Returns, possibly fetches resource.
         """
         if not self._resource:
-            self._resource = self._api.one(self._type, self._id)
+            self._resource = self._endpoint.get(self._id)
         return self._resource
 
+    @classmethod
+    def manufacture(cls, api, url):
+        """
+        Manufactures ResourceProxy object.
 
-# TODO: zpruhlednit funkcnost ResourceListMixin, udelat z neho list
-# TODO: dat na ResourceListMixin napr. i vysledek api.many()
-class ResourceListMixin(object):
+        :param: api: Api
+        :param: url: basestring
+        :returns: ResourceProxy
+        """
+        assert isinstance(api, Api)
+        assert isinstance(url, basestring)
+        name, id = api.parser.get_resource_ident(url)
+        endpoint = api.get_endpoint(name)
+        return ResourceProxy(endpoint, id)
+
+
+class ResourceProxyList(object):
     """
-    Helper for lists.
+    List of ResourceProxy.
 
-    Used only for some lists and not in very clear way.
-    #TODO!!!
+    Evaluated lazily.
+
+    E.g. api.user.get(1).mailings
+
+    :const: PAGE_ROWS: How many records should fetch on one page on evaluation.
+    :param: endpoint: EndpointProxy
+    :param: ids: list
     """
-    def values(self):
-        return [r._resource for r in self[:]]
+    PAGE_ROWS = 20
 
-    def values_list(self, *fields, **kw):
-        if 'flat' in kw and kw['flat'] is True:
-            if len(fields) != 1:
-                raise Exception('Can\'t flatten if more than 1 field')
-            field = fields[0]
-            return [getattr(r, field) for r in self[:]]
-        else:
-            return [tuple(getattr(r, f) for f in fields) for r in self[:]]
+    def __init__(self, endpoint, ids):
+        assert isinstance(endpoint, EndpointProxy)
+        assert isinstance(ids, list)
+        self._endpoint = endpoint
+        self._ids = ids
+        self._resources = {}
+        self._is_fetched = False
 
-    def __getitem__(self, index):
-        raise NotImplementedError()
+    def __iter__(self):
+        """
+        Iterates resources.
 
+        Fetches them if not fetched before. Fetches them page after page.
 
-class SearchResponse(ResourceListMixin):
-    """
-    A service response containing multiple resources
+        :yields: Resource
+        """
+        generator = self._resources.itervalues() if self._is_fetched else self._fetch()
+        for item in generator:
+            yield item
 
-    E.g. api.mailing.find(...)
-    """
-    def __init__(self, api, type, meta, resources, kw={}):
-        self._api = api
-        self._type = type
-        self._total_count = meta['total_count']
-        self._resources = dict(enumerate(resources))
-        self._kw = kw
+    def __getitem__(self, item):
+        """
+        Returns single resource.
+
+        For getting more resources, use iteration.
+
+        :returns: Resource
+        """
+        item = str(item)
+        if item not in self._ids:
+            raise KeyError(item)
+        if item not in self._resources:
+            self._resources[item] = self._endpoint.get(item)
+        return self._resources[item]
 
     def __repr__(self):
-        return '<SearchResponse %s (%s/%s)>' % (self._type, len(self._resources), self._total_count)
+        return '<%s %s, total count: %s>' % (
+            self.__class__.__name__,
+            self._endpoint.resource_name,
+            len(self._ids)
+            )
 
-    def __len__(self):
-        return self._total_count
+    def _fetch(self):
+        """
+        Fetches resources page by page.
 
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            offset = index.start or 0
-            limit = len(self) - offset
-            missing = [index for index in range(offset, offset + limit) if index not in self._resources]
+        :yields: Resource
+        """
+        self._is_fetched = True
+        pages_count = int(ceil(len(self._ids) / self.PAGE_ROWS))
+        for page_num in range(pages_count):
+            offset = page_num * self.PAGE_ROWS
+            onset = offset + self.PAGE_ROWS
+            ids_slice = self._ids[offset:onset]
+            for key, val in self._endpoint.get_many(*ids_slice).iteritems():
+                self._resources[key] = val
+                yield val
 
-            if missing:
-                req_offset = min(missing)
-                req_limit = max(missing) - req_offset + 1
-                kw = self._kw.copy()
-                kw['offset'] = req_offset
-                kw['limit'] = req_limit
-                response = self._api._get(self._type, **kw)
-                resources = self._api._parse_resources(response['objects'])
-                for index, resource in enumerate(resources):
-                    self._resources[req_offset + index] = resource
+    @classmethod
+    def manufacture(cls, api, data):
+        """
+        Factory for ResourceProxyList.
 
-            return [self._resources[i] for i in range(offset, offset + limit)]
-
-        else:
-            if index >= len(self):
-                raise IndexError(index)
-            elif index not in self._resources:
-                kw = self._kw.copy()
-                kw['offset'] = index
-                kw['limit'] = 1
-                response = self._api._get(self._type, **kw)
-                resource = self._api._parse_resource(response['objects'][0])
-                self._resources[index] = resource
-            return self._resources[index]
-
-
-class ListProxy(ResourceListMixin):
-    """
-    List of connected ToMany items.
-
-    Acts like a `list` but resolves ResourceProxy objects on access.
-
-    E.g. api.user.one(1).mailings
-    """
-    def __init__(self, list, service, api):
-        self._list = list
-        self._service = service
-        self._api = api
-
-    def __repr__(self):
-        return pprint.pformat(self._list)
-
-    def _parse_item(self, item):
-        if self._service.is_resource_url(item):
-            return ResourceProxy(item, self._service, self._api)
-        else:
-            return item
-
-    def _evaluate_item(self, item):
-        item = self._parse_item(item)
-        if isinstance(item, ResourceProxy):
-            return item._get()
-        return item
-
-    def __getitem__(self, index):
-        item = self._list[index]
-        if not item:
+        :param: api: Api
+        :param: data: list
+        :returns: ResourceProxyList
+        """
+        assert isinstance(api, Api)
+        assert isinstance(data, list)
+        if not data:
             return []
-        if isinstance(item, list):
-            # index is a slice object
-            slice = index
-            items = map(self._parse_item, item)
-            missing = {}
-            for index, item in enumerate(items):
-                if isinstance(item, ResourceProxy):
-                    if item._resource:
-                        items[index] = item._resource
-                    else:
-                        type = item._type
-                        if type not in missing:
-                            missing[type] = {}
-                        # We assume a list only contains unique IDs otherwise, we lose the list index of duplicate IDs.
-                        missing[type][item._id] = index
-            for type in missing:
-                ids = missing[type].keys()
-                resources = self._api.many(type, *ids)
-                for id, resource in resources.items():
-                    index = missing[type][int(id)]
-                    items[index] = resource
-            self._list[slice] = items
-            return items
-        item = self._evaluate_item(item)
-        self._list[index] = item
-        return item
+        ids = []
+        for item in data:
+            name, id = api.parser.get_resource_ident(item)
+            ids.append(id)
+        endpoint = api.get_endpoint(name)
+        return ResourceProxyList(endpoint, ids)
 
 
-class Service(object):
+class ResourceList(object):
     """
-    Describe a service.
+    Resource list.
 
-    Does the url juggling.
+    Endpoint helper for paginated lists.
+
+    E.g.
+        api.mailing.all()
+        api.mailing.filter(...)
+
+    :param: endpoint: EndpointProxy
+    :param: meta: dict
+    :param: filters: dict
+    """
+    def __init__(self, endpoint, meta, filters):
+        assert isinstance(endpoint, EndpointProxy)
+        assert isinstance(meta, dict)
+        assert isinstance(filters, dict)
+        self.endpoint = endpoint
+        self._resources = []
+        self._is_fetched = False
+        self._meta = meta
+        self._filters = filters
+
+    def count(self):
+        """
+        Returns total items count.
+
+        :returns: int
+        """
+        return int(self._meta['total_count'])
+
+    @property
+    def resource_name(self):
+        return self.endpoint.resource_name
+
+    def _fetch_resources(self):
+        """
+        Used by iteration. Fetches all resources page by page.
+
+        :yields: Resource
+        """
+        self._is_fetched = True
+        data = self.endpoint.api.get(self.resource_name, **self._filters)
+        resources = Resource.manufacture_many(self.endpoint, data['objects'])
+        self._resources += resources
+        for item in resources:
+            yield item
+        new_next = data['meta']['next']
+        for item in self._iterate_pages(new_next):
+            yield item
+
+    def _iterate_pages(self, next):
+        """
+        Iterates pages.
+
+        :yields: Resource
+        """
+        if not next:
+            return
+        data = self.endpoint.api.get_by_relative_url(next)
+        resources = Resource.manufacture_many(self.endpoint, data['objects'])
+        self._resources += resources
+        for item in resources:
+            yield item
+        new_next = data['meta']['next']
+        for item in self._iterate_pages(new_next):
+            yield item
+
+    def __iter__(self):
+        """
+        Iterates all the resources belonged resources.
+
+        Fetches them if not fetched before. Fetches them page after page.
+
+        :yields: Resource
+        """
+        generator = self._resources if self._is_fetched else self._fetch_resources()
+        for item in generator:
+            yield item
+
+    def __repr__(self):
+        return '<%s %s, total count: %s>' % (
+            self.__class__.__name__,
+            self.resource_name,
+            self.count()
+        )
+
+
+class Resource(object):
+    """
+    Resource
+
+    Its data are available as properties.
+
+    E.g. api.mailing.get(1)
+
+    :param: endpoint: EndpointProxy
+    :param: data: dict
+    :param: id: basestring
+    """
+    def __init__(self, endpoint, data, id):
+        assert isinstance(endpoint, EndpointProxy)
+        assert isinstance(data, dict)
+        assert isinstance(id, basestring)
+        self.endpoint = endpoint
+        self._data = data
+        self._id = id
+        self._is_deleted = False
+
+    @property
+    def name(self):
+        return self.endpoint.resource_name
+
+    def get_url(self):
+        return self.endpoint.api.get_url(self.name, self._id)
+
+    def __repr__(self):
+        return '<%s %s/%s: %s>' % (
+            self.__class__.__name__,
+            self.name,
+            self._id,
+            self._data
+        )
+
+    def __getattr__(self, attr):
+        """
+        Returns resource property.
+
+        E.g. api.mailing.get(1).email
+
+        :raises: AttributeError
+        :returns: mixed
+        """
+        if attr in self._data:
+            return self._data[attr]
+        else:
+            raise AttributeError(attr)
+
+    def update(self, **kw):
+        """
+        Updates resources by PATCH request and returns updated resource.
+
+        :keyword params: resource fields
+        :raises: BadHttpStatus if returned status is not 202
+        :returns: Resource
+        """
+        if self._is_deleted:
+            raise ResourceDeleted
+        url = self.get_url()
+        headers = {'content-type': 'application/json'}
+        response = self.endpoint.api.request(url, request=requests.patch, data=simplejson.dumps(kw), headers=headers)
+        if response.status_code != 202:
+            self.endpoint.api.raise_error(response)
+        return self.endpoint.get(self._id)
+
+    def delete(self):
+        """
+        Deletes resource by DELETE request.
+
+        :raises: BadHttpStatus if returned status is not 204
+        :returns: True
+        """
+        if self._is_deleted:
+            raise ResourceDeleted
+        url = self.get_url()
+        response = self.endpoint.api.request(url, request=requests.delete)
+        if response.status_code != 204:
+            self.endpoint.api.raise_error(response)
+        self._is_deleted = True
+        return True
+
+    @classmethod
+    def manufacture(cls, endpoint, data):
+        """
+        Manufactures Resource from raw data returned by server.
+
+        Replace related resource URLs with ResourceProxy objects.
+
+        :param: endpoint: EndpointProxy
+        :param: data: dict
+        :returns: Resource
+        """
+        assert isinstance(endpoint, EndpointProxy)
+        assert isinstance(data, dict)
+        url = data['resource_uri']
+        del data['resource_uri']
+        for attr, value in data.items():
+            if endpoint.api.parser.is_resource_url(value):
+                data[attr] = ResourceProxy.manufacture(endpoint.api, value)
+            elif isinstance(value, list):
+                data[attr] = ResourceProxyList.manufacture(endpoint.api, value)
+        resource_name, resource_id = endpoint.api.parser.get_resource_ident(url)
+        return Resource(endpoint, data, resource_id)
+
+    @classmethod
+    def manufacture_many(cls, endpoint, data):
+        """
+        Manufactures Resources from raw data list.
+
+        :param: endpoint: EndpointProxy
+        :param: data: iterable
+        :returns: list(Resource)
+        """
+        assert isinstance(endpoint, EndpointProxy)
+        assert hasattr(data, '__iter__')
+        return [Resource.manufacture(endpoint, item) for item in data]
+
+
+class EndpointProxy(object):
+    """
+    Proxy to resource endpoint
+
+    E.g. api.mailing
+
+    :param: api: Api
+    :param: endpoint_url: basestring
+    :param: schema_url: basestring
+    """
+    def __init__(self, api, endpoint_url, schema_url):
+        assert isinstance(api, Api)
+        assert isinstance(endpoint_url, basestring)
+        assert isinstance(schema_url, basestring)
+        self.api = api
+        self._endpoint_url = endpoint_url
+        self._schema_url = schema_url
+        self.resource_name = filter(bool, endpoint_url.split('/'))[-1]
+
+    def __repr__(self):
+        return '<%s %s>' % (
+            self.__class__.__name__,
+            self.get_url(),
+        )
+
+    def get_url(self):
+        """
+        Returns endpoint url.
+
+        :returns: str
+        """
+        return self.api.get_url(self.resource_name)
+
+    def get_schema_url(self):
+        """
+        Returns endpoint schema url.
+
+        :returns: str
+        """
+        return '%s%s' % (self.api.parser.base_url, self._schema_url)
+
+    def get_schema(self):
+        """
+        Returns endpoint schema.
+
+        :returns: dict
+        """
+        return self.api.get_by_absolute_url(self.get_schema_url())
+
+    def get(self, id=None, **kwargs):
+        """
+        Returns one resource.
+
+        Specified by id or by django QuerySet filter attributes.
+
+        :raises: BadHttpStatus if returned status is not 200
+        :returns: Resource
+        """
+        if id:
+            data = self.api.get(self.resource_name, id, **kwargs)
+            return Resource.manufacture(self, data)
+        if not kwargs:
+            raise ResourceIdMissing
+        list_proxy = self.filter(**kwargs)
+        if list_proxy.count() != 1:
+            raise TooManyResources
+        return [item for item in list_proxy][0]
+
+    def get_many(self, *ids, **kwargs):
+        """
+        Returns more resources.
+
+        Specified by ids.
+        This doesn't have paging so you get all the records you want.
+
+        :raises: BadHttpStatus if returned status is not 200
+        :returns: dict(str(resource id): Resource)
+        """
+        id = 'set/' + ';'.join(map(str, ids))
+        data = self.api.get(self.resource_name, id)
+        resources = Resource.manufacture_many(self, data['objects'])
+        # Transform a list of Resource in a dict using resource ID as key
+        resources = dict([(r.id, r) for r in resources])
+        # Add not found IDs to the dict
+        if 'not_found' in data:
+            for id in data['not_found']:
+                resources[int(id)] = None
+        return resources
+
+    def all(self):
+        """
+        Returns all resources generator.
+
+        If you want to walk trough ALL resources. Use self.__iter__()
+
+        :raises: BadHttpStatus if returned status is not 200
+        :returns: SearchResponse
+        """
+        return self.filter()
+
+    def filter(self, **kwargs):
+        """
+        Returns filtered resources generator.
+
+        Specified by django QuerySet filter attributes.
+
+        :raises: BadHttpStatus if returned status is not 200
+        :returns: SearchResponse
+        """
+        data = self.api.get(self.resource_name, **kwargs)
+        meta = data['meta']
+        return ResourceList(self, meta, kwargs)
+
+    def add(self, **kwargs):
+        """
+        Adds resource to this endpoint and returns it.
+
+        Issues POST to endpoint url with resource parameters given as **kwargs.
+
+        :raises: BadHttpStatus if returned status is not 201
+        :returns: Resource
+        """
+        url = self.get_url()
+        headers = {'content-type': 'application/json'}
+        response = self.api.request(url, request=requests.post, data=simplejson.dumps(kwargs), headers=headers)
+        if response.status_code != 201:
+            self.api.raise_error(response)
+        data = self.api.get_by_absolute_url(response.headers['location'])
+        return Resource.manufacture(self, data)
+
+
+class Parser(object):
+    """
+    Service url parser.
+
+    :param: url: basestring
     """
     def __init__(self, url):
+        assert isinstance(url, basestring)
         self.url = url
-        self.base_url, self.base_path = self._parse_url(url)
+        self.base_url, self.base_path = self._get_url_parts(url)
 
-    def _parse_url(self, url):
-        """Extracts the base URL and the base path from the service URL
-
-        >>> service.parse_url('http://foo.bar/1/')
-        ('http://foo.bar', '/1/')
+    def _get_url_parts(self, url):
         """
+        Extracts the base URL and the base path from the service URL.
+
+        E.g.
+        self._get_url_parts('http://foo.bar/1/') -> ('http://foo.bar', '/1/')
+
+        :returns: 2-tuple (str, str)
+        """
+        assert isinstance(url, basestring)
         proto, host, path = urlparse.urlsplit(url)[0:3]
         return '%s://%s' % (proto, host), path
 
-    def is_resource_url(self, obj):
-        """Returns True if `obj` is a valid resource URL"""
-        return isinstance(obj, basestring) and obj.startswith(self.base_path)
-
-    def parse_resource_url(self, url):
-        """Parses a resource URL and returns a tuple of (resource, id)
-
-        `resource` is the resource type, and `id` is the resource id.
+    def is_resource_url(self, url):
         """
+        Returns True if `url` is a valid resource URL
+
+        :returns: bool
+        """
+        return isinstance(url, basestring) and url.startswith(self.base_path)
+
+    def get_resource_ident(self, url):
+        """
+        Parses a resource URL and returns a tuple of (resource_name, resource_id)
+
+        E.g.
+        self.get_resource_ident('http://foo.bar/1/resource/1') -> ('resource', '1')
+
+        :returns: 2-tuple (str, str)
+        """
+        assert isinstance(url, basestring)
         return url.split('/')[-3:-1]
 
 
 class Api(object):
     """
     The TastyPie client
+
+    E.g. api = Api('http://127.0.0.1:8000/api/v1/', auth=('martin', '***'))
+
+    :param: service_url: basestring
+    :param: serializer: None|SerializerInterface
+    :param: auth: tuple|AuthBase
+    :param: config: dict
     """
     def __init__(self, service_url, serializer=None, auth=None, config={}):
-        self._auth = auth
-        self._requests_config = config
+        assert isinstance(service_url, basestring)
+        assert isinstance(auth, (tuple, AuthBase))
+        assert isinstance(config, dict)
+        self._request_auth = auth
+        self._request_config = config
         if settings.DEBUG:
-            self._requests_config['verbose'] = sys.stdout
-        self._service = Service(service_url)
-        self._serializer = JsonSerializer() if serializer is None else serializer
-        self._endpoints = self._get() # The API endpoint should return resource endpoints list.
+            self._request_config['verbose'] = sys.stdout
+        self.parser = Parser(service_url)
+        self._serializer = serializer or JsonSerializer()
+        assert isinstance(self._serializer, SerializerInterface)
+        self._endpoints = self.get() # The API endpoint should return resource endpoints list.
 
-    def __repr__(self):
-        return '<Api: %s>' % self._service.url
-
-    def __getattr__(self, attr):
+    def __getattr__(self, name):
         """
-        Some magic to enable us to dynamically resolves the endpoints names on
-        on the Api object.
+        Summons endpoints.
 
-        For example :
-            Api('http://localhost:1337/').poney.find(name__startswith='D')
-        Generates an HTTP GET request on this URL :
-            http://localhost:1337/poney/?name__startswith=D
+        E.g. api.mailing
+
+        :returns: EndpointProxy
         """
-        if attr in self._endpoints:
-            return EndpointProxy(self, self._endpoints[attr]['list_endpoint'], self._endpoints[attr]['schema'])
+        return self.get_endpoint(name)
+
+    def get_endpoint(self, name):
+        """
+        Returns endpoint proxy object for desired resource.
+
+        E.g.
+        api.get_endpoint('mailing') -> EndpointProxy to 'http://127.0.0.1:8000/api/v1/mailing'
+
+        :returns: EndpointProxy
+        """
+        assert isinstance(name, basestring)
+        if name in self._endpoints:
+            return EndpointProxy(self, self._endpoints[name]['list_endpoint'], self._endpoints[name]['schema'])
         else:
-            raise AttributeError(attr)
+            raise AttributeError(name)
 
-    def get_resources(self):
-        return dict((item, getattr(self, item)) for item in self._endpoints.keys())
+    def get_endpoints(self):
+        """
+        Returns available endpoints
 
-    def _get_url(self, resource=None, id=None, **kw):
+        E.g.
+        {
+            u'mailing': <EndpointProxy http://127.0.0.1:8000/api/v1/mailing/>,
+            u'profile': <EndpointProxy http://127.0.0.1:8000/api/v1/profile/>,
+            u'user': <EndpointProxy http://127.0.0.1:8000/api/v1/user/>
+        }
+
+        :returns: dict(unicode, EndpointProxy)
+        """
+        return dict((item, self.get_endpoint(item)) for item in self._endpoints.keys())
+
+    def get_url(self, resource_name=None, resource_id=None, **kwargs):
         """Generate an URL
 
-        1. The service URL is used as the base string (eg. "/api/1/")
-        2. If a `resource` is given, it is appended (eg. "/api/1/country/")
-            2.1. If an `id` is given, it is appended (eg. "/api/1/country/2/")
-        3. If keyword arguments are given, construct a query string and append
-           it :
-           kw = dict(foo=42, bar='test')
-           => '/api/1/resource/?foo=42&bar=test
+        1. The service URL is used as the base string (e.g. "/api/1/")
+        2. If a `resource_name` is given, it is appended (e.g. "/api/1/country/")
+            2.1. If an `resource_id` is given, it is appended (e.g. "/api/1/country/2/")
+        3. If keyword arguments are given, construct a query string and append it e.g.
+           kwargs = dict(foo=42, bar='test') => '/api/1/resource_name/?foo=42&bar=test
+
+        :returns: str
         """
-        url = self._service.url
-        if resource is not None:
-            url += '%s/' % resource
-            if id is not None:
-                url += '%s/' % id
-        if kw:
-            for key, value in kw.items():
+        url = self.parser.url
+        if resource_name is not None:
+            url += '%s/' % resource_name
+            if resource_id is not None:
+                url += '%s/' % resource_id
+        if kwargs:
+            for key, value in kwargs.items():
                 if isinstance(value, basestring):
-                    kw[key] = value.encode('utf-8')
-            url += '?' + urllib.urlencode(kw)
+                    kwargs[key] = value.encode('utf-8')
+            url += '?' + urllib.urlencode(kwargs)
         return url
 
-    def _parse_resource(self, resource):
-        """Parses a raw resource as returned by the service, replace related
-           resource URLs with ResourceProxy objects.
-        """
-
-        url = resource['resource_uri']
-        del resource['resource_uri']
-
-        for attr, value in resource.items():
-            if self._service.is_resource_url(value):
-                resource[attr] = ResourceProxy(value, self._service, self)
-            elif isinstance(value, list):
-                resource[attr] = ListProxy(value, self._service, self)
-
-        type_, id_ = self._service.parse_resource_url(url)
-        return Resource(resource, type_, id_, url)
-
-    def _parse_resources(self, resources):
-        return map(self._parse_resource, resources)
-
-    def _request(self, url, request=requests.get, data=None, headers=None, **kw):
+    def request(self, url, request=requests.get, data=None, headers=None, **kwargs):
         """
         Does the request.
+
+        :returns: requests.models.Response
         """
-        return request(url, auth=self._auth, config=self._requests_config, data=data, headers=headers)
+        return request(url, auth=self._request_auth, config=self._request_config, data=data, headers=headers)
 
-    def _get_by_url(self, url):
-        response = self._request(url)
+    def get_by_absolute_url(self, url):
+        """
+        Does GET request by url and if successful, decodes it.
+
+        :returns: dict
+        """
+        assert isinstance(url, basestring)
+        response = self.request(url)
         if response.status_code != 200:
-            self._raise_error(response)
-        raw_data = response.content
-        data = self._serializer.decode(raw_data)
-        return data
+            self.raise_error(response)
+        return self._serializer.decode(response.content)
 
-    def _raise_error(self, response):
+    def get_by_relative_url(self, url):
+        """
+        Does GET request by relative url and if successful, decodes it.
+
+        :returns: dict
+        """
+        assert isinstance(url, basestring)
+        url = '%s%s' % (self.parser.base_url, url)
+        return self.get_by_absolute_url(url)
+
+    def get(self, resource_name=None, resource_id=None, **kwargs):
+        """
+        Does GET request by resource name and id and if successful, decodes it.
+
+        :returns: dict
+        """
+        url = self.get_url(resource_name, resource_id, **kwargs)
+        return self.get_by_absolute_url(url)
+
+    def raise_error(self, response):
+        """
+        Raises error.
+
+        If request is not successful, calls this to raise error with possible description from response.
+
+        :raises: BadHttpStatus
+        """
+        assert isinstance(response, requests.models.Response)
         content = response.content
         try:
             data = self._serializer.decode(content)
@@ -388,89 +698,8 @@ class Api(object):
         message = '[%s] %s' % (response.status_code, message)
         raise BadHttpStatus(message, response=response)
 
-    def _get(self, type=None, id=None, **kw):
-        """
-        Do a HTTP GET request
-        """
-        url = self._get_url(type, id, **kw)
-        return self._get_by_url(url)
-
-    def one(self, type, id=None, **kw):
-        """Get a resource by its ID or a search filter
-
-        Get an entry by its ID ::
-
-            api.entry.one(42)
-
-        Finds an entry by it's title ::
-
-            api.entry.one(title='foo!')
-
-        Find an entry by it's name, case insensitive ::
-
-            api.entry.one(name__iexact='FOO!')
-        """
-        if id is None:
-            if not kw:
-                raise ResourceIdMissing
-            response = self.find(type, **kw)
-            if len(response) != 1:
-                raise TooManyResources
-            return response[0]
-        else:
-            response = self._get(type, id, **kw)
-            resource = self._parse_resource(response)
-            return resource
-
-    def many(self, type, *ids):
-        """Get multiple resources (of the same type) with an unique request
-
-        Returns a list of `Resource` objects.
-
-        Example:
-            api.entry.many(17, 41)
-        """
-        id = 'set/' + ';'.join(map(str, ids))
-        response = self._get(type, id)
-        resources = self._parse_resources(response['objects'])
-        # Transform a list of Resource in a dict using resource ID as key
-        resources = dict([(r.id, r) for r in resources])
-        # Add not found IDs to the dict
-        if 'not_found' in response:
-            for id in response['not_found']:
-                resources[int(id)] = None
-        return resources
-
-    def find(self, type, **kw):
-        """Find resources based on a search filter"""
-        response = self._get(type, **kw)
-        meta = response['meta']
-        resources = self._parse_resources(response['objects'])
-        return SearchResponse(self, type, meta, resources, kw)
-
-    def add(self, type, **kw):
-        url = self._get_url(type)
-        headers = {'content-type': 'application/json'}
-        response = self._request(url, request=requests.post, data=simplejson.dumps(kw), headers=headers)
-        if response.status_code != 201:
-            self._raise_error(response)
-        response = self._get_by_url(response.headers['location'])
-        resource = self._parse_resource(response)
-        return resource
-
-    def update(self, type, id, **kw):
-        url = self._get_url(type, id)
-        headers = {'content-type': 'application/json'}
-        response = self._request(url, request=requests.patch, data=simplejson.dumps(kw), headers=headers)
-        if response.status_code != 202:
-            self._raise_error(response)
-        response = self._get_by_url(url)
-        resource = self._parse_resource(response)
-        return resource
-
-    def delete(self, type, id):
-        url = self._get_url(type, id)
-        response = self._request(url, request=requests.delete)
-        if response.status_code != 204:
-            self._raise_error(response)
-        return True
+    def __repr__(self):
+        return '<%s: %s>' % (
+            self.__class__.__name__,
+            self.parser.url
+        )
