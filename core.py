@@ -570,6 +570,7 @@ class Api(object):
         self._request_auth = auth
         self._request_config = config
         if settings.DEBUG:
+            # TODO: ussual logging logger
             self._request_config['verbose'] = sys.stdout
         self.parser = Parser(service_url)
         self._serializer = serializer or JsonSerializer()
