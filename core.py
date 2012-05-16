@@ -93,8 +93,8 @@ class ResourceProxyList(object):
         assert isinstance(ids, list)
         self._endpoint = endpoint
         self._ids = ids
-        self._resources = {}
-        self._is_fetched = False
+        self._cache = {}
+        self._is_cached = False
 
     def __iter__(self):
         """
@@ -104,7 +104,7 @@ class ResourceProxyList(object):
 
         :yields: Resource
         """
-        generator = self._resources.itervalues() if self._is_fetched else self._fetch()
+        generator = self._cache.itervalues() if self._is_cached else self._fetch()
         for item in generator:
             yield item
 
@@ -119,9 +119,9 @@ class ResourceProxyList(object):
         item = str(item)
         if item not in self._ids:
             raise KeyError(item)
-        if item not in self._resources:
-            self._resources[item] = self._endpoint.get(item)
-        return self._resources[item]
+        if item not in self._cache:
+            self._cache[item] = self._endpoint.get(item)
+        return self._cache[item]
 
     def __repr__(self):
         return '<%s %s, total count: %s>' % (
@@ -136,14 +136,14 @@ class ResourceProxyList(object):
 
         :yields: Resource
         """
-        self._is_fetched = True
+        self._is_cached = True
         pages_count = int(ceil(len(self._ids) / self.PAGE_ROWS))
         for page_num in range(pages_count):
             offset = page_num * self.PAGE_ROWS
             onset = offset + self.PAGE_ROWS
             ids_slice = self._ids[offset:onset]
             for key, val in self._endpoint.get_many(*ids_slice).iteritems():
-                self._resources[key] = val
+                self._cache[key] = val
                 yield val
 
     @classmethod
@@ -186,8 +186,8 @@ class ResourceList(object):
         assert isinstance(meta, dict)
         assert isinstance(filters, dict)
         self.endpoint = endpoint
-        self._resources = []
-        self._is_fetched = False
+        self._cache = []
+        self._is_cached = False
         self._meta = meta
         self._filters = filters
 
@@ -203,16 +203,16 @@ class ResourceList(object):
     def resource_name(self):
         return self.endpoint.resource_name
 
-    def _fetch_resources(self):
+    def _fetch(self):
         """
         Used by iteration. Fetches all resources page by page.
 
         :yields: Resource
         """
-        self._is_fetched = True
+        self._is_cached = True
         data = self.endpoint.api.get(self.resource_name, **self._filters)
         resources = Resource.manufacture_many(self.endpoint, data['objects'])
-        self._resources += resources
+        self._cache += resources
         for item in resources:
             yield item
         new_next = data['meta']['next']
@@ -229,7 +229,7 @@ class ResourceList(object):
             return
         data = self.endpoint.api.get_by_relative_url(next)
         resources = Resource.manufacture_many(self.endpoint, data['objects'])
-        self._resources += resources
+        self._cache += resources
         for item in resources:
             yield item
         new_next = data['meta']['next']
@@ -244,7 +244,7 @@ class ResourceList(object):
 
         :yields: Resource
         """
-        generator = self._resources if self._is_fetched else self._fetch_resources()
+        generator = self._cache if self._is_cached else self._fetch()
         for item in generator:
             yield item
 
