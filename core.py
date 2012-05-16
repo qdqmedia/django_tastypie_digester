@@ -1,3 +1,4 @@
+from logging import getLogger
 from math import ceil
 import urlparse
 import urllib
@@ -9,6 +10,7 @@ from requests.auth import AuthBase
 from .serializers import JsonSerializer, SerializerInterface
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources, ResourceDeleted
 
+logger = getLogger(__name__)
 
 class ResourceProxy(object):
     """
@@ -306,7 +308,7 @@ class Resource(object):
         else:
             raise AttributeError(attr)
 
-    def update(self, **kw):
+    def update(self, **kwargs):
         """
         Updates resources by PATCH request and returns updated resource.
 
@@ -318,7 +320,8 @@ class Resource(object):
             raise ResourceDeleted
         url = self.get_url()
         headers = {'content-type': 'application/json'}
-        response = self.endpoint.api.request(url, request=requests.patch, data=simplejson.dumps(kw), headers=headers)
+        response = self.endpoint.api.request(url, request=requests.patch, data=simplejson.dumps(kwargs), headers=headers)
+        logger.debug('Patching data: %s' % kwargs)
         if response.status_code != 202:
             self.endpoint.api.raise_error(response)
         return self.endpoint.get(self._id)
@@ -501,6 +504,7 @@ class EndpointProxy(object):
         url = self.get_url()
         headers = {'content-type': 'application/json'}
         response = self.api.request(url, request=requests.post, data=simplejson.dumps(kwargs), headers=headers)
+        logger.debug('Posting data: %s' % kwargs)
         if response.status_code != 201:
             self.api.raise_error(response)
         data = self.api.get_by_absolute_url(response.headers['location'])
@@ -552,6 +556,14 @@ class Parser(object):
         return url.split('/')[-3:-1]
 
 
+class _Logger():
+    """
+    Custom logger for requests.
+    """
+    def write(self, *args, **kwargs):
+        logger.debug(*args, **kwargs)
+
+
 class Api(object):
     """
     The TastyPie client
@@ -570,8 +582,7 @@ class Api(object):
         self._request_auth = auth
         self._request_config = config
         if settings.DEBUG:
-            # TODO: ussual logging logger
-            self._request_config['verbose'] = sys.stdout
+            self._request_config['verbose'] = _Logger()
         self.parser = Parser(service_url)
         self._serializer = serializer or JsonSerializer()
         assert isinstance(self._serializer, SerializerInterface)
