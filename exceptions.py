@@ -7,6 +7,10 @@ class BaseException(Exception):
         super(BaseException, self).__init__(message)
         self.response = response
 
+    @property
+    def status(self):
+        return self.response.status_code
+
 
 class ApiError(BaseException):
     """Raised by the Client"""
