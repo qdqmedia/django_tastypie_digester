@@ -30,10 +30,16 @@ In [3]: api
 Out[3]: <Api: http://127.0.0.1:8000/api/v1/>
 ```
 
-With basic http authentication
+With basic http authentication (only this auth is supported by now)
 
 ```
 In [2]: api = Api('http://127.0.0.1:8000/api/v1/', auth=('martin', '***'))
+```
+
+With debugging (you need to set logging module correctly)
+
+```
+In [2]: api = Api('http://127.0.0.1:8000/api/v1/', debug=True)
 ```
 
 Note: All unsuccessful communication with api server raises BadHttpStatus exception. It is discussed later.

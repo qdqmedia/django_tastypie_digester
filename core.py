@@ -646,13 +646,19 @@ class Api(object):
             if resource_id is not None:
                 url += '%s/' % resource_id
         if kwargs:
+            params = []
             for key, value in kwargs.items():
-                if isinstance(value, basestring):
-                    kwargs[key] = value.encode('utf-8')
-            url += '?' + urllib.urlencode(kwargs)
+                if not isinstance(value, (tuple, list)):
+                    value = [value]
+                for value_item in value:
+                    if isinstance(value_item, basestring):
+                        params.append((key, value_item.encode('utf-8')))
+                    else:
+                        params.append((key, value_item))
+            url += '?' + urllib.urlencode(params)
         return url
 
-    def request(self, url, request=requests.get, data=None, headers=None, **kwargs):
+    def request(self, url, request=requests.get, data=None, headers=None):
         """
         Does the request.
 
