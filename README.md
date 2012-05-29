@@ -1,5 +1,5 @@
-Tastypie digest
-===============
+Django Tastypie digester
+========================
 
 
 This package is built on tastypie-client
@@ -15,6 +15,8 @@ Requires
 
 * requests >= 0.11.2
 
+NOTE: It does not require Django! It's called django_tastypie_digester because it digests django_tastypie feeds.
+
 
 Usage
 -----
@@ -26,6 +28,12 @@ In [1]: from django_tastypie_digester import Api
 In [2]: api = Api('http://127.0.0.1:8000/api/v1/')
 In [3]: api
 Out[3]: <Api: http://127.0.0.1:8000/api/v1/>
+```
+
+With basic http authentication
+
+```
+In [2]: api = Api('http://127.0.0.1:8000/api/v1/', auth=('martin', '***'))
 ```
 
 Note: All unsuccessful communication with api server raises BadHttpStatus exception. It is discussed later.

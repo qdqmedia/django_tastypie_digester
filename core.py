@@ -2,10 +2,11 @@ from logging import getLogger
 from math import ceil
 import urlparse
 import urllib
-from django.conf import settings
-from django.utils import simplejson
+try:
+    import simplejson
+except:
+    import json as simplejson
 import requests
-import sys
 from requests.auth import AuthBase
 from .serializers import JsonSerializer, SerializerInterface
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources, ResourceDeleted
@@ -575,13 +576,13 @@ class Api(object):
     :param: auth: tuple|AuthBase
     :param: config: dict
     """
-    def __init__(self, service_url, serializer=None, auth=None, config={}):
+    def __init__(self, service_url, serializer=None, auth=None, config={}, debug=False):
         assert isinstance(service_url, basestring)
         assert isinstance(auth, (tuple, AuthBase))
         assert isinstance(config, dict)
         self._request_auth = auth
         self._request_config = config
-        if settings.DEBUG:
+        if debug:
             self._request_config['verbose'] = _Logger()
         self.parser = Parser(service_url)
         self._serializer = serializer or JsonSerializer()
