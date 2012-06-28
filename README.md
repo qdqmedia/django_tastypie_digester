@@ -5,7 +5,7 @@ Django Tastypie digester
 This package has been inspired by
 ---------------------------------
 
-Author: Philippe Muller
+Philippe Muller's tastypie-client
 
 Github: https://github.com/pmuller/tastypie-client
 
