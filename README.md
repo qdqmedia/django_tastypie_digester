@@ -5,10 +5,12 @@ Django Tastypie digester
 This package has been inspired by
 ---------------------------------
 
-https://github.com/pmuller/tastypie-client
-
 Author: Philippe Muller
+
+Github: https://github.com/pmuller/tastypie-client
+
 Package: http://pypi.python.org/pypi/tastypie-client
+
 Docs: http://packages.python.org/tastypie-client
 
 
