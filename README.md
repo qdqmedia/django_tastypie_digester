@@ -2,8 +2,10 @@ Django Tastypie digester
 ========================
 
 
-This package is built on tastypie-client
-----------------------------------------
+This package has been inspired by
+---------------------------------
+
+https://github.com/pmuller/tastypie-client
 
 Author: Philippe Muller
 Package: http://pypi.python.org/pypi/tastypie-client
