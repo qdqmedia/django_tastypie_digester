@@ -1,3 +1,4 @@
+import logging
 from logging import getLogger
 from math import ceil
 import urlparse
@@ -12,6 +13,7 @@ from .serializers import JsonSerializer, SerializerInterface
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources, ResourceDeleted
 
 logger = getLogger(__name__)
+
 
 class ResourceProxy(object):
     """
@@ -557,14 +559,6 @@ class Parser(object):
         return url.split('/')[-3:-1]
 
 
-class _Logger():
-    """
-    Custom logger for requests.
-    """
-    def write(self, *args, **kwargs):
-        logger.debug(*args, **kwargs)
-
-
 class Api(object):
     """
     The TastyPie client
@@ -574,20 +568,18 @@ class Api(object):
     :param: service_url: basestring
     :param: serializer: None|SerializerInterface
     :param: auth: tuple|AuthBase
-    :param: config: dict
     """
-    def __init__(self, service_url, serializer=None, auth=None, config={}, debug=False):
+    def __init__(self, service_url, serializer=None, auth=None, debug=False):
         assert isinstance(service_url, basestring)
         assert isinstance(auth, (tuple, AuthBase))
-        assert isinstance(config, dict)
         self._request_auth = auth
-        self._request_config = config
         if debug:
-            self._request_config['verbose'] = _Logger()
+            logger.setLevel(logging.DEBUG)
+            logger.propagate = True
         self.parser = Parser(service_url)
         self._serializer = serializer or JsonSerializer()
         assert isinstance(self._serializer, SerializerInterface)
-        self._endpoints = self.get() # The API endpoint should return resource endpoints list.
+        self._endpoints = self.get()  # The API endpoint should return resource endpoints list.
 
     def __getattr__(self, name):
         """
@@ -664,7 +656,7 @@ class Api(object):
 
         :returns: requests.models.Response
         """
-        return request(url, auth=self._request_auth, config=self._request_config, data=data, headers=headers)
+        return request(url, auth=self._request_auth, data=data, headers=headers)
 
     def get_by_absolute_url(self, url):
         """
