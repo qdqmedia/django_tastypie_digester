@@ -17,7 +17,7 @@ Docs: http://packages.python.org/tastypie-client
 Requires
 --------
 
-* requests >= 0.11.2
+* requests >= 2.3.0
 
 NOTE: It does not require Django! It's called django_tastypie_digester because it digests django_tastypie feeds.
 
