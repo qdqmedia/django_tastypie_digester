@@ -1,19 +1,14 @@
-import logging
 from logging import getLogger
 from math import ceil
 import urlparse
 import urllib
-try:
-    import simplejson
-except:
-    import json as simplejson
+import json
 import requests
 from requests.auth import AuthBase
-from .serializers import JsonSerializer, SerializerInterface
+from .serializers import JsonSerializer, SerializerInterface, JsonLazyEncoder
 from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources, ResourceDeleted
 
 logger = getLogger(__name__)
-
 
 class ResourceProxy(object):
     """
@@ -323,7 +318,7 @@ class Resource(object):
             raise ResourceDeleted
         url = self.get_url()
         headers = {'content-type': 'application/json'}
-        response = self.endpoint.api.request(url, request=requests.patch, data=simplejson.dumps(kwargs), headers=headers)
+        response = self.endpoint.api.request(url, request=requests.patch, data=json.dumps(kwargs, cls=JsonLazyEncoder), headers=headers)
         logger.debug('Patching data: %s' % kwargs)
         if response.status_code != 202:
             self.endpoint.api.raise_error(response)
@@ -506,7 +501,7 @@ class EndpointProxy(object):
         """
         url = self.get_url()
         headers = {'content-type': 'application/json'}
-        response = self.api.request(url, request=requests.post, data=simplejson.dumps(kwargs), headers=headers)
+        response = self.api.request(url, request=requests.post, data=json.dumps(kwargs, cls=JsonLazyEncoder), headers=headers)
         logger.debug('Posting data: %s' % kwargs)
         if response.status_code != 201:
             self.api.raise_error(response)
@@ -559,27 +554,52 @@ class Parser(object):
         return url.split('/')[-3:-1]
 
 
+class _Logger():
+    """
+    Custom logger for requests.
+    """
+    def write(self, *args, **kwargs):
+        logger.debug(*args, **kwargs)
+
+
 class Api(object):
     """
-    The TastyPie client
+    The TastyPie client.
+    Supposed to be REST api client, but uses some advantages of TastyPie which other REST apis do not implement.
 
     E.g. api = Api('http://127.0.0.1:8000/api/v1/', auth=('martin', '***'))
-
-    :param: service_url: basestring
-    :param: serializer: None|SerializerInterface
-    :param: auth: tuple|AuthBase
     """
-    def __init__(self, service_url, serializer=None, auth=None, debug=False):
+
+    def __init__(self, service_url, serializer=None, auth=None, config={}, debug=False, load_endpoints=True, strip_trailing_slash=False, **kwargs):
+        """
+        :param service_url: basestring
+        :param serializer: None|SerializerInterface
+        :param auth: tuple|AuthBase
+        :param config: dict                              DEPRECATED
+            config dict directly passed to requests
+        :param debug: bool                               DEPRECATED
+        :param load_endpoints: bool
+            whether to load endpoints (TastyPie feature) on initialization
+        :param strip_trailing_slash: bool
+            whether to strip trailing slashes in urls, e.g.
+                http://127.0.0.1:8000/api/v1/mailings/ vs.
+                http://127.0.0.1:8000/api/v1/mailings
+            TastyPie api supports trailing slashes (django uses interface for redirecting from "non-slashed" url to "slashed")
+            Other clients does not have to support trailing slashes
+        :param kwargs: **dict
+            kwargs directly passed to requests
+        """
         assert isinstance(service_url, basestring)
         assert isinstance(auth, (tuple, AuthBase))
         self._request_auth = auth
-        if debug:
-            logger.setLevel(logging.DEBUG)
-            logger.propagate = True
+        self._request_kwargs = kwargs
         self.parser = Parser(service_url)
         self._serializer = serializer or JsonSerializer()
+        self._strip_trailing_slash = strip_trailing_slash
         assert isinstance(self._serializer, SerializerInterface)
-        self._endpoints = self.get()  # The API endpoint should return resource endpoints list.
+        if load_endpoints:
+            # The API endpoint should return resource endpoints list.
+            self._endpoints = self.get()
 
     def __getattr__(self, name):
         """
@@ -637,6 +657,8 @@ class Api(object):
             url += '%s/' % resource_name
             if resource_id is not None:
                 url += '%s/' % resource_id
+        if self._strip_trailing_slash:
+            url = url.strip('/')
         if kwargs:
             params = []
             for key, value in kwargs.items():
@@ -656,7 +678,7 @@ class Api(object):
 
         :returns: requests.models.Response
         """
-        return request(url, auth=self._request_auth, data=data, headers=headers)
+        return request(url, auth=self._request_auth, data=data, headers=headers, **self._request_kwargs)
 
     def get_by_absolute_url(self, url):
         """
