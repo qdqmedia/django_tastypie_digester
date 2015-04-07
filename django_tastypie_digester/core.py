@@ -1,14 +1,23 @@
 from logging import getLogger
 from math import ceil
-import urlparse
+
+import sys
+if sys.version_info.major == 3:
+    from urllib.parse import urlparse
+else:
+    import urlparse
+
+
 import urllib
 import json
 import requests
 from requests.auth import AuthBase
 from .serializers import JsonSerializer, SerializerInterface, JsonLazyEncoder
-from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources, ResourceDeleted
+from .exceptions import BadHttpStatus, ResourceIdMissing, TooManyResources,\
+    ResourceDeleted
 
 logger = getLogger(__name__)
+
 
 class ResourceProxy(object):
     """
