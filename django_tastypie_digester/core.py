@@ -704,7 +704,8 @@ class Api(object):
         response = self.request(url)
         if response.status_code != 200:
             self.raise_error(response)
-        return self._serializer.decode(response.content)
+        response.enconding = 'utf8'
+        return self._serializer.decode(response.text)
 
     def get_by_relative_url(self, url):
         """
