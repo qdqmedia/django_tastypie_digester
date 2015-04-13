@@ -29,11 +29,11 @@ class ResourceProxy(object):
     E.g. api.mailing.get(1).user
 
     :param: endpoint: EndpointProxy
-    :param: id: str
+    :param: id: basestring
     """
     def __init__(self, endpoint, id):
         assert isinstance(endpoint, EndpointProxy)
-        assert id is not None
+        assert isinstance(id, basestring)
         self._endpoint = endpoint
         self._id = id
         self._resource = None
@@ -73,11 +73,11 @@ class ResourceProxy(object):
         Manufactures ResourceProxy object.
 
         :param: api: Api
-        :param: url: str
+        :param: url: basestring
         :returns: ResourceProxy
         """
         assert isinstance(api, Api)
-        assert url is not None
+        assert isinstance(url, basestring)
         name, id = api.parser.get_resource_ident(url)
         endpoint = api.get_endpoint(name)
         return ResourceProxy(endpoint, id)
@@ -275,12 +275,12 @@ class Resource(object):
 
     :param: endpoint: EndpointProxy
     :param: data: dict
-    :param: id: str
+    :param: id: basestring
     """
     def __init__(self, endpoint, data, id):
         assert isinstance(endpoint, EndpointProxy)
         assert isinstance(data, dict)
-        assert id is not None
+        assert isinstance(id, basestring)
         self.endpoint = endpoint
         self._data = data
         self._id = id
@@ -393,13 +393,13 @@ class EndpointProxy(object):
     E.g. api.mailing
 
     :param: api: Api
-    :param: endpoint_url: str
-    :param: schema_url: str
+    :param: endpoint_url: basestring
+    :param: schema_url: basestring
     """
     def __init__(self, api, endpoint_url, schema_url):
         assert isinstance(api, Api)
-        assert endpoint_url is not None
-        assert schema_url is not None
+        assert isinstance(endpoint_url, basestring)
+        assert isinstance(schema_url, basestring)
         self.api = api
         self._endpoint_url = endpoint_url
         self._schema_url = schema_url
@@ -522,10 +522,10 @@ class Parser(object):
     """
     Service url parser.
 
-    :param: url: str
+    :param: url: basestring
     """
     def __init__(self, url):
-        assert url is not None
+        assert isinstance(url, basestring)
         self.url = url
         self.base_url, self.base_path = self._get_url_parts(url)
 
@@ -538,7 +538,7 @@ class Parser(object):
 
         :returns: 2-tuple (str, str)
         """
-        assert url is not None
+        assert isinstance(url, basestring)
         proto, host, path = urlparse.urlsplit(url)[0:3]
         return '%s://%s' % (proto, host), path
 
@@ -548,7 +548,7 @@ class Parser(object):
 
         :returns: bool
         """
-        return url is not None and url.startswith(self.base_path)
+        return isinstance(url, basestring) and url.startswith(self.base_path)
 
     def get_resource_ident(self, url):
         """
@@ -559,7 +559,7 @@ class Parser(object):
 
         :returns: 2-tuple (str, str)
         """
-        assert url is not None
+        assert isinstance(url, basestring)
         return url.split('/')[-3:-1]
 
 
@@ -581,7 +581,7 @@ class Api(object):
 
     def __init__(self, service_url, serializer=None, auth=None, config={}, debug=False, load_endpoints=True, strip_trailing_slash=False, **kwargs):
         """
-        :param service_url: str
+        :param service_url: basestring
         :param serializer: None|SerializerInterface
         :param auth: tuple|AuthBase
         :param config: dict                              DEPRECATED
@@ -598,7 +598,7 @@ class Api(object):
         :param kwargs: **dict
             kwargs directly passed to requests
         """
-        assert service_url is not None
+        assert isinstance(service_url, basestring)
         assert isinstance(auth, (tuple, AuthBase))
         self._request_auth = auth
         self._request_kwargs = kwargs
@@ -629,7 +629,7 @@ class Api(object):
 
         :returns: EndpointProxy
         """
-        assert name is not None
+        assert isinstance(name, basestring)
         if name in self._endpoints:
             return EndpointProxy(self, self._endpoints[name]['list_endpoint'], self._endpoints[name]['schema'])
         else:
@@ -674,7 +674,7 @@ class Api(object):
                 if not isinstance(value, (tuple, list)):
                     value = [value]
                 for value_item in value:
-                    if value_item is not None:
+                    if isinstance(value_item, basestring):
                         params.append((key, value_item.encode('utf-8')))
                     else:
                         params.append((key, value_item))
@@ -695,7 +695,7 @@ class Api(object):
 
         :returns: dict
         """
-        assert url is not None
+        assert isinstance(url, basestring)
         response = self.request(url)
         if response.status_code != 200:
             self.raise_error(response)
@@ -707,7 +707,7 @@ class Api(object):
 
         :returns: dict
         """
-        assert url is not None
+        assert isinstance(url, basestring)
         url = '%s%s' % (self.parser.base_url, url)
         return self.get_by_absolute_url(url)
 
