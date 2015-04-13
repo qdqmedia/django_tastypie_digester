@@ -4,11 +4,11 @@ from math import ceil
 
 import sys
 if sys.version_info.major == 3:
-    from urllib.parse import urlparse
+    from urllib.parse import urlsplit
 
     native_string_bases = (str, bytes)
 else:
-    import urlparse
+    from urlparse import urlsplit
 
     native_string_bases = (basestring,)
 
@@ -544,7 +544,7 @@ class Parser(object):
         :returns: 2-tuple (str, str)
         """
         assert isinstance(url, native_string_bases)
-        proto, host, path = urlparse.urlsplit(url)[0:3]
+        proto, host, path = urlsplit(url)[0:3]
         return '%s://%s' % (proto, host), path
 
     def is_resource_url(self, url):
