@@ -1,11 +1,16 @@
 from logging import getLogger
 from math import ceil
 
+
 import sys
 if sys.version_info.major == 3:
     from urllib.parse import urlparse
+
+    native_string_bases = (str, bytes)
 else:
     import urlparse
+
+    native_string_bases = (basestring,)
 
 
 import urllib
@@ -29,11 +34,11 @@ class ResourceProxy(object):
     E.g. api.mailing.get(1).user
 
     :param: endpoint: EndpointProxy
-    :param: id: basestring
+    :param: id: native_string_bases
     """
     def __init__(self, endpoint, id):
         assert isinstance(endpoint, EndpointProxy)
-        assert isinstance(id, basestring)
+        assert isinstance(id, native_string_bases)
         self._endpoint = endpoint
         self._id = id
         self._resource = None
@@ -73,11 +78,11 @@ class ResourceProxy(object):
         Manufactures ResourceProxy object.
 
         :param: api: Api
-        :param: url: basestring
+        :param: url: native_string_bases
         :returns: ResourceProxy
         """
         assert isinstance(api, Api)
-        assert isinstance(url, basestring)
+        assert isinstance(url, native_string_bases)
         name, id = api.parser.get_resource_ident(url)
         endpoint = api.get_endpoint(name)
         return ResourceProxy(endpoint, id)
@@ -275,12 +280,12 @@ class Resource(object):
 
     :param: endpoint: EndpointProxy
     :param: data: dict
-    :param: id: basestring
+    :param: id: native_string_bases
     """
     def __init__(self, endpoint, data, id):
         assert isinstance(endpoint, EndpointProxy)
         assert isinstance(data, dict)
-        assert isinstance(id, basestring)
+        assert isinstance(id, native_string_bases)
         self.endpoint = endpoint
         self._data = data
         self._id = id
@@ -393,13 +398,13 @@ class EndpointProxy(object):
     E.g. api.mailing
 
     :param: api: Api
-    :param: endpoint_url: basestring
-    :param: schema_url: basestring
+    :param: endpoint_url: native_string_bases
+    :param: schema_url: native_string_bases
     """
     def __init__(self, api, endpoint_url, schema_url):
         assert isinstance(api, Api)
-        assert isinstance(endpoint_url, basestring)
-        assert isinstance(schema_url, basestring)
+        assert isinstance(endpoint_url, native_string_bases)
+        assert isinstance(schema_url, native_string_bases)
         self.api = api
         self._endpoint_url = endpoint_url
         self._schema_url = schema_url
@@ -522,10 +527,10 @@ class Parser(object):
     """
     Service url parser.
 
-    :param: url: basestring
+    :param: url: native_string_bases
     """
     def __init__(self, url):
-        assert isinstance(url, basestring)
+        assert isinstance(url, native_string_bases)
         self.url = url
         self.base_url, self.base_path = self._get_url_parts(url)
 
@@ -538,7 +543,7 @@ class Parser(object):
 
         :returns: 2-tuple (str, str)
         """
-        assert isinstance(url, basestring)
+        assert isinstance(url, native_string_bases)
         proto, host, path = urlparse.urlsplit(url)[0:3]
         return '%s://%s' % (proto, host), path
 
@@ -548,7 +553,7 @@ class Parser(object):
 
         :returns: bool
         """
-        return isinstance(url, basestring) and url.startswith(self.base_path)
+        return isinstance(url, native_string_bases) and url.startswith(self.base_path)
 
     def get_resource_ident(self, url):
         """
@@ -559,7 +564,7 @@ class Parser(object):
 
         :returns: 2-tuple (str, str)
         """
-        assert isinstance(url, basestring)
+        assert isinstance(url, native_string_bases)
         return url.split('/')[-3:-1]
 
 
@@ -581,7 +586,7 @@ class Api(object):
 
     def __init__(self, service_url, serializer=None, auth=None, config={}, debug=False, load_endpoints=True, strip_trailing_slash=False, **kwargs):
         """
-        :param service_url: basestring
+        :param service_url: native_string_bases
         :param serializer: None|SerializerInterface
         :param auth: tuple|AuthBase
         :param config: dict                              DEPRECATED
@@ -598,7 +603,7 @@ class Api(object):
         :param kwargs: **dict
             kwargs directly passed to requests
         """
-        assert isinstance(service_url, basestring)
+        assert isinstance(service_url, native_string_bases)
         assert isinstance(auth, (tuple, AuthBase))
         self._request_auth = auth
         self._request_kwargs = kwargs
@@ -629,7 +634,7 @@ class Api(object):
 
         :returns: EndpointProxy
         """
-        assert isinstance(name, basestring)
+        assert isinstance(name, native_string_bases)
         if name in self._endpoints:
             return EndpointProxy(self, self._endpoints[name]['list_endpoint'], self._endpoints[name]['schema'])
         else:
@@ -674,7 +679,7 @@ class Api(object):
                 if not isinstance(value, (tuple, list)):
                     value = [value]
                 for value_item in value:
-                    if isinstance(value_item, basestring):
+                    if isinstance(value_item, native_string_bases):
                         params.append((key, value_item.encode('utf-8')))
                     else:
                         params.append((key, value_item))
@@ -695,7 +700,7 @@ class Api(object):
 
         :returns: dict
         """
-        assert isinstance(url, basestring)
+        assert isinstance(url, native_string_bases)
         response = self.request(url)
         if response.status_code != 200:
             self.raise_error(response)
@@ -707,7 +712,7 @@ class Api(object):
 
         :returns: dict
         """
-        assert isinstance(url, basestring)
+        assert isinstance(url, native_string_bases)
         url = '%s%s' % (self.parser.base_url, url)
         return self.get_by_absolute_url(url)
 
