@@ -736,7 +736,8 @@ class Api(object):
         :raises: BadHttpStatus
         """
         assert isinstance(response, requests.models.Response)
-        content = response.content
+        response.enconding = 'utf8'
+        content = response.text
         try:
             data = self._serializer.decode(content)
             message = data.get('error_message', '')
