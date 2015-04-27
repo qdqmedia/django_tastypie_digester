@@ -408,7 +408,8 @@ class EndpointProxy(object):
         self.api = api
         self._endpoint_url = endpoint_url
         self._schema_url = schema_url
-        self.resource_name = filter(bool, endpoint_url.split('/'))[-1]
+        resource_name_iter = filter(bool, endpoint_url.split('/'))
+        self.resource_name = list(resource_name_iter)[-1]
 
     def __repr__(self):
         return '<%s %s>' % (
@@ -704,7 +705,8 @@ class Api(object):
         response = self.request(url)
         if response.status_code != 200:
             self.raise_error(response)
-        return self._serializer.decode(response.content)
+        response.enconding = 'utf8'
+        return self._serializer.decode(response.text)
 
     def get_by_relative_url(self, url):
         """
@@ -734,7 +736,8 @@ class Api(object):
         :raises: BadHttpStatus
         """
         assert isinstance(response, requests.models.Response)
-        content = response.content
+        response.enconding = 'utf8'
+        content = response.text
         try:
             data = self._serializer.decode(content)
             message = data.get('error_message', '')
